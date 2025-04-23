@@ -192,8 +192,7 @@ def main():
 
     except AuthenticationError as auth_err:
         logger.error(f"Authentication Failed: {auth_err}")
-    except DXTradeWrapperError as wrapper_err:
-        logger.error(f"Wrapper Error: {wrapper_err}")
+    
     except Exception as e:
         logger.error(f"An unexpected error occurred in main: {e}", exc_info=True)
 
