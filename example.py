@@ -20,9 +20,7 @@ from dxtrade_wrapper import (
 # Load environment variables from .env file if it exists
 load_dotenv()
 
-# !! IMPORTANT: Replace placeholders or set environment variables !!
-# Use environment variables for security
-# Example: export DXTRADE_USERNAME="your_username"
+
 DXTRADE_BASE_URL = os.getenv("DXTRADE_BASE_URL", "https://dxtrade.ftmo.com") # Replace with your broker's URL
 DXTRADE_USERNAME = os.getenv("DXTRADE_USERNAME", "YOUR_USERNAME")
 DXTRADE_PASSWORD = os.getenv("DXTRADE_PASSWORD", "YOUR_PASSWORD")
