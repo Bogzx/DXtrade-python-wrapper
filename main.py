@@ -5,7 +5,7 @@ import os
 import queue
 import time
 import threading
-from dotenv import load_dotenv # Optional: for loading .env files (pip install python-dotenv)
+from dotenv import load_dotenv 
 
 # Import your wrapper class (assuming it's in a file named dxtrade_wrapper.py)
 from dxtrade_wrapper import (
