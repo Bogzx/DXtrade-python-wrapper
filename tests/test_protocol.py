@@ -247,6 +247,39 @@ def test_caller_supplied_order_code_is_respected(logged_in):
     assert payload["orderCode"] == "my-key-1"
 
 
+def test_linked_sl_tp_orders_carry_account_and_order_code(logged_in):
+    """
+    The account/orderCode fix must cover the linked SL and TP orders too, not
+    just the primary order. (Review of the 2026 fix found it had been applied to
+    the primary and Stop Loss payloads but not the Take Profit payload.)
+    """
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}{PREFIX}/accounts/default:ACC12345/orders",
+        json=fixture("order_accepted"),
+        status=200,
+    )
+    logged_in.place_order(
+        instrument="EUR/USD",
+        side="BUY",
+        quantity=1.0,
+        order_type="MARKET",
+        stop_loss=1.05,
+        take_profit=1.15,
+    )
+
+    # calls[0] is login; then primary order, SL order, TP order.
+    order_calls = responses.calls[1:]
+    assert len(order_calls) == 3, "expected primary + SL + TP orders"
+    codes = []
+    for call in order_calls:
+        payload = json.loads(call.request.body)
+        assert payload["account"] == "default:ACC12345"
+        assert payload.get("orderCode"), f"orderCode missing from {payload}"
+        codes.append(payload["orderCode"])
+    assert len(set(codes)) == 3, "each order must carry its own idempotency key"
+
+
 def test_generated_order_codes_are_unique():
     """Idempotency keys that collided would suppress legitimate orders."""
     wrapper = make_wrapper()
