@@ -1,9 +1,29 @@
 """
-DXTradeDashboardWrapper: A user-friendly Python wrapper for DXTRADE API trading dashboard functionalities.
+DXTradeDashboardWrapper: A Python wrapper for DXTRADE API trading dashboard functionalities.
 
 This wrapper abstracts the complexities of direct API interaction for common dashboard-related tasks,
 providing a simple interface for authentication, account data retrieval, order management,
 and real-time data handling via WebSockets.
+
+=============================================================================
+UNVERIFIED - THIS CODE HAS NEVER SUCCESSFULLY TALKED TO A DXTRADE SERVER
+=============================================================================
+
+Every request shape in this module (URL paths, the authorization scheme, the
+order payload, the WebSocket handshake and message formats) was inferred from
+community examples and a third-party development guide, not from official
+Devexperts documentation and not from a captured session.
+
+Several protocol bugs were found and fixed by code review in 2026 - the
+missing ``/dxsca-web`` prefix on every non-login path, a ``Bearer``
+authorization scheme where DXtrade SCA expects ``DXAPI``, and an order payload
+missing its ``account`` and ``orderCode`` fields. Those fixes are also
+UNVERIFIED: confirming them requires a live account at a broker that still
+enables SCA REST access, which the author does not have. Anything in this file
+marked "UNVERIFIED" is a best-effort inference that may still be wrong.
+
+Do not use this against a funded account. See the README's "Project Status"
+section before you spend time here.
 """
 
 import json
@@ -11,8 +31,10 @@ import logging
 import queue
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from urllib.parse import urlencode
 
 import requests
 import websocket
@@ -102,7 +124,14 @@ class DXTradeDashboardWrapper:
     This wrapper abstracts the complexities of direct API interaction and provides
     a simple interface for authentication, account data retrieval, order management,
     and real-time data handling via WebSockets.
+
+    UNVERIFIED: see the module docstring. No call in this class has ever been
+    confirmed against a live DXtrade server.
     """
+
+    #: Authorization scheme for authenticated REST calls. DXtrade SCA uses the
+    #: custom "DXAPI" scheme rather than "Bearer" (UNVERIFIED).
+    AUTH_SCHEME = "DXAPI"
 
     def __init__(
         self,
@@ -110,8 +139,11 @@ class DXTradeDashboardWrapper:
         username: str,
         password: str,
         domain_or_vendor: str = "default",
-        login_path: str = "/dxsca-web/login",
+        api_prefix: str = "/dxsca-web",
+        login_path: str = "/login",
         websocket_path: str = "/websocket",
+        account: Optional[str] = None,
+        keepalive_interval: Optional[float] = 60.0,
         logger: Optional[logging.Logger] = None
     ):
         """
@@ -122,18 +154,51 @@ class DXTradeDashboardWrapper:
             username: User's trading account username.
             password: User's trading account password.
             domain_or_vendor: The domain or vendor identifier required for login (defaults to "default").
-            login_path: The specific path for the login endpoint relative to base_url.
-            websocket_path: The specific path for the WebSocket connection.
+            api_prefix: Path prefix shared by every REST endpoint, including login.
+                Defaults to "/dxsca-web", the DXtrade SCA prefix. Pass "" for a
+                deployment that serves the API at the root. Every URL this class
+                builds goes through `_url()`, so this is the single place to change
+                it - see the note below.
+            login_path: The login endpoint path, relative to `api_prefix`. A value that
+                already includes the prefix (e.g. "/dxsca-web/login") is accepted and
+                normalised, so older configs and .env files keep working.
+            websocket_path: The specific path for the WebSocket connection. This is NOT
+                under `api_prefix` - it is appended to the host directly.
+            account: Account code used in account-scoped URLs and order payloads. The
+                login response does not reliably carry one; if it does not and this is
+                unset, account-scoped calls raise rather than guessing.
+            keepalive_interval: Seconds between `/ping` calls after a successful login,
+                to stop the session expiring silently. Pass None to disable.
             logger: Optional standard Python logger instance for internal logging.
+
+        Note on `api_prefix` (UNVERIFIED):
+            Before 2026 this class hardcoded "/dxsca-web/login" as the login path and
+            then built every *other* URL straight off `base_url`, so every call after
+            login was missing the prefix and would 404 at any broker. The prefix is now
+            a single constructor argument applied by `_url()`, so that class of bug
+            cannot recur silently. The prefix VALUE is still unverified against a live
+            server.
         """
         # Configuration
         self._base_url = base_url.rstrip('/')
         self._username = username
         self._password = password
         self._domain_or_vendor = domain_or_vendor
-        self._login_path = login_path.lstrip('/')
+
+        # Normalise the prefix to either "" or "/something" (no trailing slash).
+        prefix = (api_prefix or "").strip('/')
+        self._api_prefix = f"/{prefix}" if prefix else ""
+
+        # Accept a login_path that already carries the prefix, so existing configs
+        # such as DXTRADE_LOGIN_PATH=/dxsca-web/login do not produce a doubled
+        # "/dxsca-web/dxsca-web/login".
+        login_path = (login_path or "login").strip('/')
+        if prefix and (login_path == prefix or login_path.startswith(f"{prefix}/")):
+            login_path = login_path[len(prefix):].strip('/')
+        self._login_path = login_path or "login"
+
         self._websocket_path = websocket_path.lstrip('/')
-        
+
         # Use provided logger or create a default one
         self._logger = logger or logging.getLogger("DXTradeWrapper")
         if not self._logger.handlers:
@@ -146,8 +211,16 @@ class DXTradeDashboardWrapper:
         self._session = requests.Session()
         self._auth_token = None
         self._is_authenticated = False
-        self._account_id = None  # Will be set during login if available
-        
+        # Set from the constructor if supplied, otherwise from the login response.
+        # There is deliberately no default - see _get_account_id().
+        self._configured_account = account
+        self._account_id = account
+
+        # Session keepalive state
+        self._keepalive_interval = keepalive_interval
+        self._keepalive_thread = None
+        self._keepalive_stop = threading.Event()
+
         # WebSocket state
         self._ws_client = None
         self._ws_thread = None
@@ -166,17 +239,39 @@ class DXTradeDashboardWrapper:
         self._subscribed_instruments = set()
         self._account_updates_subscribed = False
 
+    # URL construction
+    def _url(self, path: str) -> str:
+        """
+        Build a full REST URL for a path relative to the configured API prefix.
+
+        Every REST call in this class MUST go through this method. Building URLs
+        inline is what produced the original bug where login used "/dxsca-web/login"
+        but all eight other endpoints hit the bare host and would 404 everywhere.
+
+        Args:
+            path: Endpoint path relative to the API prefix, with or without a
+                leading slash (e.g. "login", "/accounts/ACC/orders").
+
+        Returns:
+            str: The absolute URL, e.g. "https://host/dxsca-web/accounts/ACC/orders".
+        """
+        return f"{self._base_url}{self._api_prefix}/{path.lstrip('/')}"
+
     # Authentication methods
     def login(self) -> None:
         """
         Authenticate with the DXTRADE API.
-        
+
+        UNVERIFIED: the payload shape, the auth parameter name and the token field
+        names below are all inferred. This has never returned a token from a real
+        server.
+
         Raises:
             AuthenticationError: If authentication fails due to invalid credentials,
                                 network issues, or unexpected response format.
         """
-        login_url = f"{self._base_url}/{self._login_path}"
-        
+        login_url = self._url(self._login_path)
+
         # Prepare request payload
         payload = {
             "username": self._username,
@@ -209,10 +304,14 @@ class DXTradeDashboardWrapper:
             if self._auth_token:
                 self._is_authenticated = True
                 self._configure_auth_headers()
-                
-                # Try to extract account ID if available
-                self._account_id = self._extract_account_id(response_data)
-                
+
+                # Try to extract account ID if available. An account supplied via the
+                # constructor wins only if the response carries nothing usable.
+                self._account_id = self._extract_account_id(response_data) or self._account_id
+
+                # Keep the session alive; DXtrade sessions expire on idle.
+                self._start_keepalive()
+
                 self._logger.info("Authentication successful")
                 return
             else:
@@ -236,34 +335,123 @@ class DXTradeDashboardWrapper:
     def logout(self) -> None:
         """
         Log out from the DXTRADE API and invalidate the current session.
+
+        UNVERIFIED: the logout endpoint is assumed to be POST {api_prefix}/logout.
+        A failure here is logged and swallowed - local state is always cleared, so
+        logout() is safe to call even if the server rejects or does not implement
+        the request.
         """
         # Disconnect WebSocket if connected
         if self._ws_connected:
             self.disconnect_websocket()
-        
-        # Check if we have a logout endpoint (if found in documentation)
-        # logout_url = f"{self._base_url}/logout"  # Adjust based on actual API
-        # try:
-        #     self._session.post(logout_url, timeout=10)
-        # except Exception as e:
-        #     self._logger.warning(f"Error during logout request: {e}")
-        
+
+        self._stop_keepalive()
+
+        # Best-effort server-side session invalidation. Previously this call was
+        # commented out entirely, so logout() only ever cleared local state and
+        # left the session alive server-side until it timed out.
+        if self._is_authenticated:
+            try:
+                self._session.post(self._url("logout"), timeout=10)
+            except Exception as e:
+                self._logger.warning(f"Error during logout request (ignored): {e}")
+
         # Reset session and authentication state
         self._session = requests.Session()
         self._auth_token = None
         self._is_authenticated = False
-        self._account_id = None
+        # Fall back to the constructor-supplied account, if any, rather than
+        # discarding it - it is configuration, not session state.
+        self._account_id = self._configured_account
         self._logger.info("Logged out successfully")
 
     @property
     def is_authenticated(self) -> bool:
         """
         Check if the wrapper is currently authenticated.
-        
+
         Returns:
             bool: True if authenticated, False otherwise.
         """
         return self._is_authenticated
+
+    # Session keepalive
+    def ping(self) -> bool:
+        """
+        Send a session keepalive to the server.
+
+        DXtrade SCA sessions expire after a period of inactivity. Before 2026 this
+        class had no renewal mechanism at all, so a long-lived process would simply
+        start getting 401s partway through a session with no indication why.
+
+        UNVERIFIED: the endpoint is assumed to be GET {api_prefix}/ping. Neither the
+        path, the method, nor the idle timeout it is meant to defeat has been
+        confirmed against a live server.
+
+        Returns:
+            bool: True if the server accepted the ping, False otherwise. This does
+            not raise - a failed keepalive is reported to the caller and logged, so
+            the background thread cannot kill the process.
+        """
+        if not self._is_authenticated:
+            return False
+
+        try:
+            response = self._session.get(self._url("ping"), timeout=10)
+            if response.status_code == 200:
+                self._logger.debug("Keepalive ping accepted")
+                return True
+            self._logger.warning(
+                f"Keepalive ping rejected with status {response.status_code}"
+            )
+            return False
+        except requests.exceptions.RequestException as e:
+            self._logger.warning(f"Keepalive ping failed: {e}")
+            return False
+
+    def _start_keepalive(self) -> None:
+        """
+        Start the background thread that pings the server periodically.
+
+        No-op if `keepalive_interval` was None, or if a thread is already running.
+        """
+        if not self._keepalive_interval or self._keepalive_interval <= 0:
+            return
+        if self._keepalive_thread and self._keepalive_thread.is_alive():
+            return
+
+        self._keepalive_stop.clear()
+        self._keepalive_thread = threading.Thread(
+            target=self._keepalive_loop,
+            name="DXTradeKeepalive",
+            daemon=True,
+        )
+        self._keepalive_thread.start()
+        self._logger.debug(
+            f"Keepalive thread started (every {self._keepalive_interval}s)"
+        )
+
+    def _stop_keepalive(self) -> None:
+        """
+        Signal the keepalive thread to stop and wait briefly for it to exit.
+        """
+        self._keepalive_stop.set()
+        thread = self._keepalive_thread
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=5)
+        self._keepalive_thread = None
+
+    def _keepalive_loop(self) -> None:
+        """
+        Body of the keepalive thread: ping until told to stop.
+
+        Uses Event.wait() rather than sleep() so that _stop_keepalive() returns
+        promptly instead of blocking for up to a full interval.
+        """
+        while not self._keepalive_stop.wait(self._keepalive_interval):
+            if not self._is_authenticated:
+                break
+            self.ping()
 
     # Account data methods
     def get_balance(self) -> Balance:
@@ -280,7 +468,7 @@ class DXTradeDashboardWrapper:
         self._check_authenticated()
         
         account_id = self._get_account_id()
-        balance_url = f"{self._base_url}/accounts/{account_id}/portfolio"
+        balance_url = self._url(f"accounts/{account_id}/portfolio")
         
         try:
             response = self._session.get(balance_url, timeout=10)
@@ -313,7 +501,7 @@ class DXTradeDashboardWrapper:
         self._check_authenticated()
         
         account_id = self._get_account_id()
-        positions_url = f"{self._base_url}/accounts/{account_id}/positions"
+        positions_url = self._url(f"accounts/{account_id}/positions")
         
         try:
             response = self._session.get(positions_url, timeout=10)
@@ -346,7 +534,7 @@ class DXTradeDashboardWrapper:
         self._check_authenticated()
         
         account_id = self._get_account_id()
-        orders_url = f"{self._base_url}/accounts/{account_id}/orders"
+        orders_url = self._url(f"accounts/{account_id}/orders")
         
         try:
             response = self._session.get(orders_url, timeout=10)
@@ -382,7 +570,7 @@ class DXTradeDashboardWrapper:
         self._check_authenticated()
         
         account_id = self._get_account_id()
-        history_url = f"{self._base_url}/accounts/{account_id}/history"
+        history_url = self._url(f"accounts/{account_id}/history")
         params = {"limit": limit}
         
         try:
@@ -430,15 +618,22 @@ class DXTradeDashboardWrapper:
             take_profit: Optional take profit price.
             position_effect: 'OPEN' (new position) or 'CLOSE' (close existing).
             tif: Time In Force, typically 'GTC' (Good Till Cancel).
-            **kwargs: Additional parameters for the order.
-            
+            **kwargs: Additional parameters for the order. Pass `orderCode` to supply
+                your own idempotency key instead of a generated one.
+
         Returns:
             Dict[str, Any]: Details of the placed order, including order_id.
-            
+
         Raises:
             AuthenticationError: If not authenticated.
             OrderPlacementError: If order placement fails.
+            DXTradeAPIError: If no account code is known (see `_get_account_id`).
             ValueError: If required parameters are missing or invalid.
+
+        UNVERIFIED: the payload below adds the `account` and `orderCode` fields that
+        DXtrade SCA requires and this class previously omitted - orders would have
+        been rejected at validation even had they reached the right URL. The rest of
+        the field names are inferred and unconfirmed.
         """
         self._check_authenticated()
         
@@ -457,10 +652,16 @@ class DXTradeDashboardWrapper:
             raise ValueError(f"Price is required for {order_type} orders")
         
         account_id = self._get_account_id()
-        orders_url = f"{self._base_url}/accounts/{account_id}/orders"
-        
-        # Construct order payload
+        orders_url = self._url(f"accounts/{account_id}/orders")
+
+        # Construct order payload.
+        # `account` and `orderCode` are required by DXtrade SCA and were both missing
+        # before 2026. `orderCode` is a client-generated idempotency key: resending the
+        # same code must not open a second position, which is what makes a retry after
+        # a timeout safe. Callers can pass their own via kwargs.
         payload = {
+            "account": account_id,
+            "orderCode": kwargs.pop("orderCode", None) or self._generate_order_code(),
             "instrument": instrument,
             "side": side,
             "quantity": quantity,
@@ -468,7 +669,7 @@ class DXTradeDashboardWrapper:
             "positionEffect": position_effect,
             "tif": tif
         }
-        
+
         # Add price for LIMIT or STOP orders
         if order_type == 'LIMIT':
             payload["limitPrice"] = price
@@ -535,7 +736,7 @@ class DXTradeDashboardWrapper:
         self._check_authenticated()
         
         account_id = self._get_account_id()
-        modify_url = f"{self._base_url}/accounts/{account_id}/orders/{order_id}"
+        modify_url = self._url(f"accounts/{account_id}/orders/{order_id}")
         
         # Construct payload with only the fields to modify
         payload = {}
@@ -584,7 +785,7 @@ class DXTradeDashboardWrapper:
         self._check_authenticated()
         
         account_id = self._get_account_id()
-        cancel_url = f"{self._base_url}/accounts/{account_id}/orders/{order_id}"
+        cancel_url = self._url(f"accounts/{account_id}/orders/{order_id}")
         
         try:
             self._logger.debug(f"Canceling order {order_id}")
@@ -626,7 +827,7 @@ class DXTradeDashboardWrapper:
         self._check_authenticated()
         
         account_id = self._get_account_id()
-        close_url = f"{self._base_url}/positions/{position_id}"
+        close_url = self._url(f"positions/{position_id}")
         
         payload = {}
         if quantity is not None:
@@ -683,7 +884,7 @@ class DXTradeDashboardWrapper:
         if stop_loss is None and take_profit is None:
             raise ValueError("At least one of stop_loss or take_profit must be provided")
         
-        modify_url = f"{self._base_url}/positions/{position_id}"
+        modify_url = self._url(f"positions/{position_id}")
         
         # Construct payload with only the fields to modify
         payload = {}
@@ -866,12 +1067,47 @@ class DXTradeDashboardWrapper:
 
     def _get_account_id(self) -> str:
         """
-        Get the account ID, with fallback to a default if not available.
-        
+        Get the account code for account-scoped URLs and payloads.
+
         Returns:
-            str: The account ID.
+            str: The account code.
+
+        Raises:
+            DXTradeAPIError: If no account code is known.
+
+        Note:
+            This used to `return self._account_id or "primary"`. No such account
+            exists at any broker - "primary" was invented, so whenever the login
+            response carried no account code every downstream call silently built a
+            URL for a nonexistent account and 404'd. Failing loudly with an
+            actionable message is strictly better than fabricating an identifier,
+            especially for a method that also names the account an *order* is
+            placed against.
         """
-        return self._account_id or "primary"  # Fallback to a default
+        if not self._account_id:
+            raise DXTradeAPIError(
+                "No account code available. The login response did not contain one. "
+                "Pass account=... to the constructor (or set DXTRADE_ACCOUNT in your "
+                ".env) with the account code shown in your broker's web terminal."
+            )
+        return self._account_id
+
+    def _generate_order_code(self) -> str:
+        """
+        Generate a client-side idempotency key for an order.
+
+        DXtrade SCA requires every order to carry a client-generated `orderCode`.
+        It is the server's deduplication key: resending an order with a code the
+        server has already seen must not open a second position, which is what
+        makes retrying after a network timeout safe rather than dangerous.
+
+        UNVERIFIED: the field name and the accepted format are inferred. Brokers may
+        impose a length or character-set limit this does not respect.
+
+        Returns:
+            str: A unique order code.
+        """
+        return f"dxpw-{uuid.uuid4().hex[:24]}"
 
     def _get_auth_param_name(self) -> str:
         """
@@ -932,10 +1168,16 @@ class DXTradeDashboardWrapper:
     def _configure_auth_headers(self) -> None:
         """
         Configure authentication headers for subsequent requests.
+
+        UNVERIFIED: DXtrade SCA uses the custom scheme `Authorization: DXAPI <token>`,
+        not the OAuth-style `Bearer <token>` this class sent until 2026. Every
+        authenticated request would have been rejected with the old scheme, on top of
+        already being sent to a prefix-less URL. Neither the scheme nor the header name
+        has been confirmed against a live server.
         """
         if self._auth_token:
             self._session.headers.update({
-                "Authorization": f"Bearer {self._auth_token}"
+                "Authorization": f"{self.AUTH_SCHEME} {self._auth_token}"
             })
 
     def _extract_position_code(self, order_response: Dict[str, Any]) -> Optional[str]:
@@ -974,7 +1216,7 @@ class DXTradeDashboardWrapper:
             take_profit_price: Take Profit price.
         """
         account_id = self._get_account_id()
-        orders_url = f"{self._base_url}/accounts/{account_id}/orders"
+        orders_url = self._url(f"accounts/{account_id}/orders")
         
         # Determine opposite side for closing orders
         close_side = "SELL" if original_side == "BUY" else "BUY"
@@ -983,6 +1225,8 @@ class DXTradeDashboardWrapper:
             # Place Stop Loss order if price provided
             if stop_loss_price is not None:
                 sl_payload = {
+                    "account": account_id,
+                    "orderCode": self._generate_order_code(),
                     "type": "STOP",
                     "positionEffect": "CLOSE",
                     "positionCode": position_code,
@@ -1000,6 +1244,8 @@ class DXTradeDashboardWrapper:
             # Place Take Profit order if price provided
             if take_profit_price is not None:
                 tp_payload = {
+                    "account": account_id,
+                    "orderCode": self._generate_order_code(),
                     "type": "LIMIT",
                     "positionEffect": "CLOSE",
                     "positionCode": position_code,
@@ -1131,24 +1377,40 @@ class DXTradeDashboardWrapper:
     def _build_websocket_url(self) -> str:
         """
         Build the WebSocket connection URL.
-        
+
+        UNVERIFIED: passing the session token as a `token` query parameter is
+        inferred from community examples, not documented. Note that query strings
+        commonly end up in server access logs, so this is a poor place for a
+        credential; if a broker accepts the token in a header instead, prefer that.
+
         Returns:
             str: The full WebSocket URL.
+
+        Note:
+            The query string is now assembled with urlencode() from a dict. The
+            previous version appended "?token=..." only when a token existed but
+            then appended "&account=..." unconditionally, so with an account and no
+            token it emitted a malformed "...&account=X" with no "?" at all - the
+            first parameter introduced by an ampersand. It also interpolated both
+            values raw, so any reserved character in a token or account code
+            corrupted the query.
         """
         # Convert HTTP(S) to WS(S)
         ws_protocol = "wss://" if self._base_url.startswith("https://") else "ws://"
         base_without_protocol = self._base_url.split("://")[1]
-        
-        # Construct WebSocket URL with auth token if available
+
         ws_url = f"{ws_protocol}{base_without_protocol}/{self._websocket_path}"
-        
-        # Add authentication token as query parameter if available
+
+        # Collect query parameters, then encode them in one place.
+        params: Dict[str, str] = {}
         if self._auth_token:
-            ws_url += f"?token={self._auth_token}"
-            
-        # Add any additional required parameters (adjust based on actual requirements)
-        ws_url += f"&account={self._account_id}" if self._account_id else ""
-        
+            params["token"] = self._auth_token
+        if self._account_id:
+            params["account"] = self._account_id
+
+        if params:
+            ws_url = f"{ws_url}?{urlencode(params)}"
+
         return ws_url
 
     def _build_websocket_headers(self) -> List[str]:
@@ -1171,10 +1433,19 @@ class DXTradeDashboardWrapper:
         headers.append("X-Atmosphere-Framework: 1.0")
         headers.append("X-atmo-protocol: true")
         
-        # Add authorization header if token is available and not already in URL
-        if self._auth_token and "token=" not in self._build_websocket_url():
-            headers.append(f"Authorization: Bearer {self._auth_token}")
-            
+        # Add the authorization header whenever a token exists.
+        #
+        # This was previously guarded by `"token=" not in self._build_websocket_url()`,
+        # which could never be satisfied: _build_websocket_url() adds "token=" exactly
+        # when self._auth_token is truthy, so the left operand implied the negation of
+        # the right and the header was never once sent. Sending the token in both the
+        # header and the query string is harmless and lets a broker accept either.
+        #
+        # UNVERIFIED: like the REST scheme, this uses DXAPI rather than the Bearer
+        # that was here before. Neither has been confirmed for the WebSocket handshake.
+        if self._auth_token:
+            headers.append(f"Authorization: {self.AUTH_SCHEME} {self._auth_token}")
+
         return headers
 
     def _websocket_listener_thread(self) -> None:
