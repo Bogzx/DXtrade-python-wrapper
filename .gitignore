@@ -1,1 +1,56 @@
+# --- Secrets -----------------------------------------------------------------
+# Never commit a real .env. Copy .env.example to .env and fill it in locally.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets.json
 
+# --- Python bytecode / caches ------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# --- Packaging / build artifacts ---------------------------------------------
+build/
+dist/
+sdist/
+wheels/
+*.egg-info/
+*.egg
+.eggs/
+MANIFEST
+
+# --- Virtual environments ----------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# --- Test / coverage / type-check caches -------------------------------------
+.pytest_cache/
+.cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# --- Editors / OS ------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Logs --------------------------------------------------------------------
+*.log
