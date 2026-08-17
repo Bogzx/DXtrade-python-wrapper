@@ -16,6 +16,22 @@ from dxtrade_wrapper import (
     WebSocketError
 )
 
+# =============================================================================
+# THIS EXAMPLE HAS NEVER RUN SUCCESSFULLY.
+#
+# It is kept as an illustration of the intended API, not as a working demo. The
+# wrapper is a non-functional prototype: FTMO disabled DXtrade REST access for
+# clients in April 2024, and three further blocking bugs (missing /dxsca-web
+# prefix, wrong Bearer authorization scheme, order payload missing account and
+# orderCode) would have broken it against any other broker. Those three are
+# fixed but UNVERIFIED - see the README's "Project Status" section.
+#
+# Expect this to fail. Do not point it at a funded account.
+#
+# Requires: pip install -r requirements.txt  (python-dotenv is needed for the
+# load_dotenv() call below - it was missing from the README's dependency list.)
+# =============================================================================
+
 # --- Configuration ---
 # Load environment variables from .env file if it exists
 load_dotenv()
@@ -26,8 +42,15 @@ DXTRADE_USERNAME = os.getenv("DXTRADE_USERNAME", "YOUR_USERNAME")
 DXTRADE_PASSWORD = os.getenv("DXTRADE_PASSWORD", "YOUR_PASSWORD")
 # For FTMO, this should likely be "ftmo"
 DXTRADE_DOMAIN_VENDOR = os.getenv("DXTRADE_DOMAIN_VENDOR", "ftmo")
-# Potential login paths: "/dxsca-web/login" or "/api/auth/"
-DXTRADE_LOGIN_PATH = os.getenv("DXTRADE_LOGIN_PATH", "/dxsca-web/login")
+# Shared prefix for every REST endpoint, login included. Applied by the wrapper's
+# _url() helper - see the README, cause 2.
+DXTRADE_API_PREFIX = os.getenv("DXTRADE_API_PREFIX", "/dxsca-web")
+# Login path, relative to the prefix. A value that still carries the prefix
+# (e.g. "/dxsca-web/login") is normalised by the wrapper, so old .env files work.
+DXTRADE_LOGIN_PATH = os.getenv("DXTRADE_LOGIN_PATH", "/login")
+# Account code. The login response does not reliably carry one, and the wrapper
+# now raises rather than guessing, so set this if you know it.
+DXTRADE_ACCOUNT = os.getenv("DXTRADE_ACCOUNT") or None
 # WebSocket path needs verification for your broker
 DXTRADE_WEBSOCKET_PATH = os.getenv("DXTRADE_WEBSOCKET_PATH", "/websocket/events") # Adjust as needed!
 
@@ -61,8 +84,10 @@ def main():
         username=DXTRADE_USERNAME,
         password=DXTRADE_PASSWORD,
         domain_or_vendor=DXTRADE_DOMAIN_VENDOR,
+        api_prefix=DXTRADE_API_PREFIX,
         login_path=DXTRADE_LOGIN_PATH,
         websocket_path=DXTRADE_WEBSOCKET_PATH,
+        account=DXTRADE_ACCOUNT,
         logger=logging.getLogger("DXTradeWrapper") # Pass specific logger
     )
     logger.info("DXTradeDashboardWrapper instantiated.")
