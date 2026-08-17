@@ -1244,6 +1244,8 @@ class DXTradeDashboardWrapper:
             # Place Take Profit order if price provided
             if take_profit_price is not None:
                 tp_payload = {
+                    "account": account_id,
+                    "orderCode": self._generate_order_code(),
                     "type": "LIMIT",
                     "positionEffect": "CLOSE",
                     "positionCode": position_code,
