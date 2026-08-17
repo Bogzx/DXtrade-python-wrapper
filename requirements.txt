@@ -1,0 +1,12 @@
+# Runtime dependencies.
+#
+# NOTE: installing these does not make this wrapper work. See the "Project
+# Status" section of the README - the client is a non-functional prototype whose
+# protocol has never been verified against a live DXtrade server.
+
+requests>=2.25.0
+websocket-client>=1.0.0
+
+# Used by example.py to load .env. This was missing from the README's dependency
+# list, so following the README broke the example at example.py:8.
+python-dotenv>=0.19.0
