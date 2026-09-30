@@ -1,0 +1,20 @@
+{
+  "metrics": [
+    {
+      "account": "default:ACC12345",
+      "version": 42,
+      "equity": 100250.0,
+      "balance": 100000.0,
+      "availableBalance": 98500.0,
+      "availableFunds": 98750.0,
+      "allocatedFunds": 1500.0,
+      "credit": 0,
+      "marginFree": 98750.0,
+      "openPL": 250.0,
+      "totalPL": 250.0,
+      "margin": 1500.0,
+      "openPositionsCount": 1,
+      "openOrdersCount": 2
+    }
+  ]
+}
