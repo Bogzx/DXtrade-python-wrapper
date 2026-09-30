@@ -182,6 +182,7 @@ class DXTradeDashboardWrapper:
         self._configured_account = account
         self._account_id = account
         self._account_currency: Dict[str, str] = {}
+        self._accounts_cache: Optional[List[JSON]] = None
 
         self._keepalive_interval = keepalive_interval
         self._keepalive_thread: Optional[threading.Thread] = None
@@ -405,6 +406,7 @@ class DXTradeDashboardWrapper:
         self._auth_token = None
         self._is_authenticated = False
         self._account_id = self._configured_account
+        self._accounts_cache = None
         self._logger.info("Logged out")
 
     @property
@@ -510,6 +512,7 @@ class DXTradeDashboardWrapper:
                 })
                 if code and details.get("baseCurrency"):
                     self._account_currency[code] = details["baseCurrency"]
+        self._accounts_cache = accounts
         return accounts
 
     def _get_account_id(self) -> str:
@@ -520,7 +523,8 @@ class DXTradeDashboardWrapper:
         """
         if self._account_id:
             return self._account_id
-        accounts = [a["account"] for a in self.get_accounts() if a["account"]]
+        known = self._accounts_cache if self._accounts_cache is not None else self.get_accounts()
+        accounts = [a["account"] for a in known if a["account"]]
         if len(accounts) == 1:
             self._account_id = accounts[0]
             self._logger.info("Using account %s", self._account_id)
