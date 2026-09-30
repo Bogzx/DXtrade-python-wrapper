@@ -1,0 +1,24 @@
+{
+  "orders": [
+    {
+      "account": "default:ACC12345",
+      "orderId": 63649,
+      "orderCode": "3a4-XYZ",
+      "version": 41,
+      "clientOrderId": "dxpw-entry-1",
+      "actionCode": "act-0",
+      "legCount": 1,
+      "type": "MARKET",
+      "instrument": "EUR/USD",
+      "status": "COMPLETED",
+      "finalStatus": true,
+      "legs": [{"instrument": "EUR/USD", "positionEffect": "OPEN", "side": "BUY",
+                "quantity": 100000, "filledQuantity": 100000, "averagePrice": 1.0850}],
+      "side": "BUY",
+      "tif": "GTC",
+      "issueTime": "2026-09-30T08:00:00.000Z",
+      "transactionTime": "2026-09-30T08:00:00.100Z"
+    }
+  ],
+  "nextPageTransactionTime": "2026-09-30T07:00:00.000Z"
+}

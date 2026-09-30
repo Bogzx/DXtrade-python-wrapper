@@ -1,237 +1,99 @@
-# main.py
+"""Read-only tour of a real DXtrade account: balance, positions, orders, live quotes.
+
+    pip install -e ".[examples]"
+    cp .env.example .env        # fill in your broker URL and credentials
+    python example.py
+
+It places no orders. Pass --demo-order to place (and immediately cancel) one far
+from the market; use a DEMO account for that. This client follows the public
+DXtrade spec but has not been verified against a live broker.
+
+No broker account? Run examples/offline_demo.py instead.
+"""
 
 import logging
 import os
 import queue
+import sys
 import time
-import threading
-from dotenv import load_dotenv 
 
-# Import your wrapper class (assuming it's in a file named dxtrade_wrapper.py)
-from dxtrade_wrapper import (
-    DXTradeDashboardWrapper,
-    AuthenticationError,
-    DXTradeAPIError,
-    OrderPlacementError,
-    WebSocketError
-)
+from dotenv import load_dotenv
 
-# =============================================================================
-# THIS EXAMPLE HAS NEVER RUN SUCCESSFULLY.
-#
-# It is kept as an illustration of the intended API, not as a working demo. The
-# wrapper is a non-functional prototype: FTMO disabled DXtrade REST access for
-# clients in April 2024, and three further blocking bugs (missing /dxsca-web
-# prefix, wrong Bearer authorization scheme, order payload missing account and
-# orderCode) would have broken it against any other broker. Those three are
-# fixed but UNVERIFIED - see the README's "Project Status" section.
-#
-# Expect this to fail. Do not point it at a funded account.
-#
-# Requires: pip install -r requirements.txt  (python-dotenv is needed for the
-# load_dotenv() call below - it was missing from the README's dependency list.)
-# =============================================================================
+from dxtrade_wrapper import DXTradeDashboardWrapper, DXTradeWrapperError
 
-# --- Configuration ---
-# Load environment variables from .env file if it exists
 load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("example")
+
+SYMBOLS = os.getenv("DXTRADE_SYMBOLS", "EUR/USD,GBP/USD").split(",")
 
 
-DXTRADE_BASE_URL = os.getenv("DXTRADE_BASE_URL", "https://dxtrade.ftmo.com") # Replace with your broker's URL
-DXTRADE_USERNAME = os.getenv("DXTRADE_USERNAME", "YOUR_USERNAME")
-DXTRADE_PASSWORD = os.getenv("DXTRADE_PASSWORD", "YOUR_PASSWORD")
-# For FTMO, this should likely be "ftmo"
-DXTRADE_DOMAIN_VENDOR = os.getenv("DXTRADE_DOMAIN_VENDOR", "ftmo")
-# Shared prefix for every REST endpoint, login included. Applied by the wrapper's
-# _url() helper - see the README, cause 2.
-DXTRADE_API_PREFIX = os.getenv("DXTRADE_API_PREFIX", "/dxsca-web")
-# Login path, relative to the prefix. A value that still carries the prefix
-# (e.g. "/dxsca-web/login") is normalised by the wrapper, so old .env files work.
-DXTRADE_LOGIN_PATH = os.getenv("DXTRADE_LOGIN_PATH", "/login")
-# Account code. The login response does not reliably carry one, and the wrapper
-# now raises rather than guessing, so set this if you know it.
-DXTRADE_ACCOUNT = os.getenv("DXTRADE_ACCOUNT") or None
-# WebSocket path needs verification for your broker
-DXTRADE_WEBSOCKET_PATH = os.getenv("DXTRADE_WEBSOCKET_PATH", "/websocket/events") # Adjust as needed!
+def main() -> int:
+    base_url = os.getenv("DXTRADE_BASE_URL", "")
+    if not base_url.startswith("https://") or not os.getenv("DXTRADE_USERNAME"):
+        log.error("Set DXTRADE_BASE_URL (https://...), DXTRADE_USERNAME and DXTRADE_PASSWORD "
+                  "in .env (see .env.example).")
+        return 2
 
-# Example symbols to subscribe to
-SYMBOLS_TO_SUBSCRIBE = ["EURUSD", "GBPUSD", "USDJPY"] # Adjust as needed
-
-# --- Logging Setup ---
-logging.basicConfig(
-    level=logging.INFO, # Set to DEBUG for more detailed wrapper logs
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger("main_test")
-
-
-# --- Main Test Function ---
-def main():
-    logger.info("Starting DXTrade Wrapper Test...")
-
-    # --- Input Validation ---
-    if "YOUR_USERNAME" == DXTRADE_USERNAME or "YOUR_PASSWORD" == DXTRADE_PASSWORD:
-        logger.error("Please replace placeholder credentials or set environment variables.")
-        return
-    if "https://" not in DXTRADE_BASE_URL:
-         logger.error(f"Invalid DXTRADE_BASE_URL: {DXTRADE_BASE_URL}")
-         return
-
-    # --- Instantiate Wrapper ---
-    # Pass necessary configuration parameters
-    wrapper = DXTradeDashboardWrapper(
-        base_url=DXTRADE_BASE_URL,
-        username=DXTRADE_USERNAME,
-        password=DXTRADE_PASSWORD,
-        domain_or_vendor=DXTRADE_DOMAIN_VENDOR,
-        api_prefix=DXTRADE_API_PREFIX,
-        login_path=DXTRADE_LOGIN_PATH,
-        websocket_path=DXTRADE_WEBSOCKET_PATH,
-        account=DXTRADE_ACCOUNT,
-        logger=logging.getLogger("DXTradeWrapper") # Pass specific logger
+    client = DXTradeDashboardWrapper(
+        base_url=base_url,
+        username=os.environ["DXTRADE_USERNAME"],
+        password=os.getenv("DXTRADE_PASSWORD", ""),
+        domain_or_vendor=os.getenv("DXTRADE_DOMAIN_VENDOR", "default"),
+        api_prefix=os.getenv("DXTRADE_API_PREFIX", "/dxsca-web"),
+        # Still honoured so .env files written for 0.1 keep working.
+        login_path=os.getenv("DXTRADE_LOGIN_PATH", "/login"),
+        websocket_path=os.getenv("DXTRADE_WEBSOCKET_PATH", "/websocket"),
+        account=os.getenv("DXTRADE_ACCOUNT") or None,
+        websocket_url=os.getenv("DXTRADE_WEBSOCKET_URL") or None,
     )
-    logger.info("DXTradeDashboardWrapper instantiated.")
-
     try:
-        # --- Login ---
-        logger.info("Attempting login...")
-        wrapper.login()
-        if wrapper.is_authenticated:
-            logger.info(f"Login successful! Account ID: {wrapper._account_id}") # Accessing internal for demo
-        else:
-            logger.error("Login reported success but wrapper state is not authenticated.")
-            return # Exit if login fails internally
+        with client:
+            log.info("Accounts: %s", client.get_accounts())
+            log.info("Balance: %s", client.get_balance())
+            for position in client.get_positions():
+                log.info("Position: %s", position)
+            for order in client.get_orders():
+                log.info("Working order: %s", order)
 
-        # --- Test REST API Calls (Authenticated) ---
-        try:
-            logger.info("Fetching account balance...")
-            balance = wrapper.get_balance()
-            logger.info(f"Balance: {balance}")
+            if "--demo-order" in sys.argv:
+                demo_order(client)
 
-            logger.info("Fetching open positions...")
-            positions = wrapper.get_positions()
-            if positions:
-                logger.info(f"Found {len(positions)} open positions:")
-                for pos in positions:
-                    logger.info(f"  - {pos}")
+            if os.getenv("DXTRADE_WEBSOCKET_URL") or os.getenv("DXTRADE_WEBSOCKET_PATH"):
+                stream_quotes(client, seconds=15)
             else:
-                logger.info("No open positions found.")
-
-            logger.info("Fetching pending orders...")
-            orders = wrapper.get_orders()
-            if orders:
-                logger.info(f"Found {len(orders)} pending orders:")
-                for order in orders:
-                    logger.info(f"  - {order}")
-            else:
-                logger.info("No pending orders found.")
-
-        except DXTradeAPIError as api_err:
-            logger.error(f"API Error during data fetch: {api_err}")
-        except Exception as e:
-            logger.error(f"Unexpected error during data fetch: {e}", exc_info=True)
+                log.info("Set DXTRADE_WEBSOCKET_URL (ask your broker) to stream quotes.")
+    except DXTradeWrapperError as exc:
+        log.error("%s: %s", type(exc).__name__, exc)
+        return 1
+    return 0
 
 
-        # --- Test WebSocket ---
-        try:
-            logger.info("Connecting to WebSocket...")
-            wrapper.connect_websocket()
-            # Give it a moment to potentially connect
-            time.sleep(2)
-
-            if wrapper._ws_connected: # Accessing internal for demo check
-                logger.info("WebSocket connection initiated (check logs for confirmation).")
-
-                logger.info(f"Subscribing to market data for: {SYMBOLS_TO_SUBSCRIBE}")
-                wrapper.subscribe_market_data(SYMBOLS_TO_SUBSCRIBE)
-
-                logger.info("Subscribing to account updates...")
-                wrapper.subscribe_account_updates()
-
-                # --- Process WebSocket Messages Loop ---
-                logger.info("Starting WebSocket message processing loop (Press Ctrl+C to stop)...")
-                running = True
-                while running:
-                    try:
-                        # Check Price Queue (Non-blocking)
-                        try:
-                            price_update = wrapper.price_update_queue.get_nowait()
-                            logger.info(f"WebSocket << Price Update: {price_update}")
-                        except queue.Empty:
-                            pass # No message
-
-                        # Check Order Queue (Non-blocking)
-                        try:
-                            order_update = wrapper.order_update_queue.get_nowait()
-                            logger.info(f"WebSocket << Order Update: {order_update}")
-                        except queue.Empty:
-                            pass # No message
-
-                        # Check Account Queue (Non-blocking)
-                        try:
-                            account_update = wrapper.account_update_queue.get_nowait()
-                            logger.info(f"WebSocket << Account Update: {account_update}")
-                        except queue.Empty:
-                            pass # No message
-
-                        # --- !! Optional: Place a Test Order (USE DEMO ACCOUNT ONLY) !! ---
-                        # Uncomment carefully for testing order placement
-                        # try:
-                        #     logger.info("Attempting to place a small test market order...")
-                        #     order_result = wrapper.place_order(
-                        #         instrument="EURUSD", # Or another valid symbol
-                        #         side="BUY",
-                        #         quantity=0.01, # Minimum allowed quantity
-                        #         order_type="MARKET"
-                        #     )
-                        #     logger.info(f"Test order placement result: {order_result}")
-                        #     # Prevent placing multiple orders in the loop
-                        #     # You'd typically place orders based on external triggers
-                        # except OrderPlacementError as ord_err:
-                        #     logger.error(f"Test order placement failed: {ord_err}")
-                        # except Exception as ord_exc:
-                        #      logger.error(f"Unexpected error during test order: {ord_exc}", exc_info=True)
-                        # # --- End Optional Test Order ---
-
-                        # Sleep briefly to avoid busy-waiting
-                        time.sleep(0.1)
-
-                    except KeyboardInterrupt:
-                        logger.info("KeyboardInterrupt received, stopping WebSocket processing.")
-                        running = False
-                    except Exception as loop_err:
-                        logger.error(f"Error in WebSocket processing loop: {loop_err}", exc_info=True)
-                        # Avoid continuous error loops
-                        time.sleep(1)
-
-            else:
-                logger.error("WebSocket failed to connect.")
-
-        except WebSocketError as ws_err:
-            logger.error(f"WebSocket Error: {ws_err}")
-        except Exception as e:
-            logger.error(f"Unexpected error during WebSocket setup: {e}", exc_info=True)
+def demo_order(client: DXTradeDashboardWrapper) -> None:
+    """A tiny LIMIT buy at DXTRADE_DEMO_PRICE (default 0.5, far below market), then cancelled."""
+    symbol = SYMBOLS[0]
+    price = float(os.getenv("DXTRADE_DEMO_PRICE", "0.5"))
+    code = client._generate_order_code()
+    log.info("Placing demo LIMIT BUY %s @ %s (orderCode %s)", symbol, price, code)
+    log.info("Response: %s", client.place_order(symbol, "BUY", 1000, "LIMIT", price=price,
+                                                orderCode=code))
+    log.info("Cancel: %s", client.cancel_order(code))
 
 
-    except AuthenticationError as auth_err:
-        logger.error(f"Authentication Failed: {auth_err}")
-    
-    except Exception as e:
-        logger.error(f"An unexpected error occurred in main: {e}", exc_info=True)
-
-    finally:
-        # --- Cleanup ---
-        logger.info("Cleaning up...")
-        if wrapper: # Check if wrapper was instantiated
-             if wrapper._ws_connected:
-                 logger.info("Disconnecting WebSocket...")
-                 wrapper.disconnect_websocket()
-             if wrapper.is_authenticated:
-                 logger.info("Logging out...")
-                 wrapper.logout()
-        logger.info("Test finished.")
+def stream_quotes(client: DXTradeDashboardWrapper, seconds: int) -> None:
+    client.connect_websocket()
+    client.subscribe_market_data(SYMBOLS)
+    client.subscribe_account_updates()
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        for name, q in (("quote", client.price_update_queue),
+                        ("order", client.order_update_queue),
+                        ("account", client.account_update_queue)):
+            try:
+                log.info("%s: %s", name, q.get(timeout=0.2))
+            except queue.Empty:
+                pass
 
 
-# --- Run the main function ---
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

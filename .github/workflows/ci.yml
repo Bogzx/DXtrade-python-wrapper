@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[test]" ruff
+      - run: ruff check .
+      - run: python -m pytest -q
+
+  spec-conformance:
+    # Downloads Devexperts' public OpenAPI document (read-only) and checks the
+    # client's requests and the test fixtures against it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -e ".[test]" mypy types-requests
+      - run: mypy dxtrade_wrapper
+      - run: DXTRADE_SPEC_TESTS=1 python -m pytest tests/test_spec_conformance.py -v
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install build && python -m build
+      - run: pip install dist/*.whl && cd /tmp && python -c "import dxtrade_wrapper; print(dxtrade_wrapper.__version__)"
