@@ -262,11 +262,7 @@ class DXTradeDashboardWrapper:
         if status == 412:
             raise PreconditionFailedError(message, **kwargs)
         if status == 429:
-            retry_after = response.headers.get("Retry-After")
-            try:
-                retry = float(retry_after) if retry_after else None
-            except ValueError:
-                retry = None
+            retry = self._retry_after(response) if "Retry-After" in response.headers else None
             raise RateLimitError(message, retry_after=retry, **kwargs)
         if status >= 500:
             raise ServerError(message, **kwargs)
@@ -292,13 +288,14 @@ class DXTradeDashboardWrapper:
         orderCode.
         """
         url = self._url(path)
-        try:
-            response = self._session.request(
-                method, url, json=json_body, params=params, headers=headers, timeout=self._timeout
-            )
-        except requests.exceptions.RequestException as exc:
-            # str(exc) carries the URL but never the body or auth header.
-            raise ConnectionError(f"{context}: network error: {exc}") from exc
+        response = self._send(method, url, context, json_body, params, headers)
+        if response.status_code == 429 and method == "GET":
+            # Reads are idempotent: wait as asked (briefly) and try once more.
+            delay = self._retry_after(response)
+            if delay is not None and delay <= self.MAX_RATE_LIMIT_WAIT:
+                self._logger.info("%s rate-limited; retrying in %.1fs", context, delay)
+                time.sleep(delay)
+                response = self._send(method, url, context, json_body, params, headers)
 
         if (
             response.status_code == 401
@@ -315,6 +312,31 @@ class DXTradeDashboardWrapper:
 
         self._raise_for_response(response, context)
         return response
+
+    #: Longest Retry-After (seconds) a GET waits out before one automatic retry.
+    MAX_RATE_LIMIT_WAIT = 5.0
+
+    def _send(self, method: str, url: str, context: str, json_body: Any,
+              params: Optional[Mapping[str, Any]],
+              headers: Optional[Mapping[str, str]]) -> requests.Response:
+        try:
+            return self._session.request(
+                method, url, json=json_body, params=params, headers=headers, timeout=self._timeout
+            )
+        except requests.exceptions.RequestException as exc:
+            # str(exc) carries the URL but never the body or auth header.
+            raise ConnectionError(f"{context}: network error: {exc}") from exc
+
+    @staticmethod
+    def _retry_after(response: requests.Response) -> Optional[float]:
+        """Retry-After in seconds; 1s when the server sent none."""
+        raw = response.headers.get("Retry-After")
+        if raw is None:
+            return 1.0
+        try:
+            return max(float(raw), 0.0)
+        except ValueError:
+            return None
 
     @staticmethod
     def _json(response: requests.Response, context: str) -> Any:
@@ -575,12 +597,26 @@ class DXTradeDashboardWrapper:
             raise DXTradeAPIError("Portfolio response was empty")
         return portfolios[0]
 
-    def get_positions(self) -> List[Position]:
-        """Open positions from GET /accounts/{account}/positions."""
+    def get_positions(self, include_pnl: bool = False) -> List[Position]:
+        """Open positions from GET /accounts/{account}/positions.
+
+        Args:
+            include_pnl: Also fetch per-position metrics and fill ``Position.pnl``
+                with the floating P/L (``fpl``, account currency). One extra request.
+        """
         self._check_authenticated()
         response = self._request("GET", self._account_path("positions"), "Get positions")
-        return [parse_position(p)
-                for p in unwrap_list(self._json(response, "Get positions"), "positions")]
+        positions = [parse_position(p)
+                     for p in unwrap_list(self._json(response, "Get positions"), "positions")]
+        if include_pnl and positions:
+            metrics = self.get_account_metrics(include_positions=True)
+            fpl = {str(m.get("positionCode")): m.get("fpl")
+                   for m in metrics.get("positions") or [] if isinstance(m, Mapping)}
+            for position in positions:
+                value = fpl.get(position.position_id)
+                if value is not None:
+                    position.pnl = float(value)
+        return positions
 
     def _open_orders_raw(self) -> Tuple[List[JSON], Optional[str]]:
         """Open orders plus the ETag the server sent with them (for If-Match)."""
