@@ -57,7 +57,8 @@ def test_calls_before_login_raise():
     "status, exc_type",
     [(404, NotFoundError), (429, RateLimitError), (500, ServerError), (400, DXTradeAPIError)],
 )
-def test_http_errors_map_to_typed_exceptions(client, api, status, exc_type):
+def test_http_errors_map_to_typed_exceptions(client, api, status, exc_type, monkeypatch):
+    monkeypatch.setattr("dxtrade_wrapper.client.time.sleep", lambda seconds: None)
     api.add(responses.GET, f"{ACC}/positions",
             json={"errorCode": "2", "description": "Entity not found at server"},
             status=status, headers={"Retry-After": "3"})
@@ -189,3 +190,31 @@ def test_library_does_not_configure_logging():
     make_wrapper()
     handlers = logging.getLogger("dxtrade_wrapper").handlers
     assert all(isinstance(h, logging.NullHandler) for h in handlers)
+
+
+def test_rate_limited_read_is_retried_once_after_retry_after(client, api, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("dxtrade_wrapper.client.time.sleep", sleeps.append)
+    api.add(responses.GET, f"{ACC}/positions", status=429, headers={"Retry-After": "2"})
+    api.add(responses.GET, f"{ACC}/positions", json=fixture("positions"))
+    assert len(client.get_positions()) == 1
+    assert sleeps == [2.0]
+
+
+def test_long_retry_after_is_not_waited_out(client, api, monkeypatch):
+    monkeypatch.setattr("dxtrade_wrapper.client.time.sleep", lambda s: pytest.fail("slept"))
+    api.add(responses.GET, f"{ACC}/positions", status=429, headers={"Retry-After": "60"})
+    with pytest.raises(RateLimitError) as excinfo:
+        client.get_positions()
+    assert excinfo.value.retry_after == 60.0
+
+
+def test_rate_limited_order_is_never_retried_automatically(client, api, monkeypatch):
+    from dxtrade_wrapper import OrderPlacementError
+
+    monkeypatch.setattr("dxtrade_wrapper.client.time.sleep", lambda s: pytest.fail("slept"))
+    api.add(responses.POST, f"{ACC}/orders", status=429, headers={"Retry-After": "1"})
+    with pytest.raises(OrderPlacementError) as excinfo:
+        client.place_order("EUR/USD", "BUY", 1000, "MARKET")
+    assert excinfo.value.status_code == 429
+    assert len(api.calls) == 2

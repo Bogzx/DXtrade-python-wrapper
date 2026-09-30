@@ -159,3 +159,23 @@ def test_portfolio_is_unwrapped(client, api):
             json={"portfolios": [{"account": ACCOUNT, "version": 1, "balances": [],
                                   "positions": [], "orders": []}]})
     assert client.get_portfolio()["account"] == ACCOUNT
+
+
+def test_positions_can_include_floating_pnl(client, api):
+    api.add(responses.GET, f"{ACC}/positions", json=fixture("positions"))
+    metrics = fixture("metrics")
+    metrics["metrics"][0]["positions"] = [{"positionCode": "63649", "symbol": "EUR/USD",
+                                           "fpl": 125.5, "quantity": 100000}]
+    api.add(responses.GET, f"{ACC}/metrics", json=metrics)
+
+    [position] = client.get_positions(include_pnl=True)
+
+    assert position.pnl == 125.5
+    assert "include-positions=true" in api.calls[-1].request.url
+
+
+def test_positions_without_pnl_make_one_request(client, api):
+    api.add(responses.GET, f"{ACC}/positions", json=fixture("positions"))
+    [position] = client.get_positions()
+    assert position.pnl is None
+    assert len(api.calls) == 2
