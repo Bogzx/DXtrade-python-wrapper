@@ -41,6 +41,9 @@ def main() -> int:
         password=os.getenv("DXTRADE_PASSWORD", ""),
         domain_or_vendor=os.getenv("DXTRADE_DOMAIN_VENDOR", "default"),
         api_prefix=os.getenv("DXTRADE_API_PREFIX", "/dxsca-web"),
+        # Still honoured so .env files written for 0.1 keep working.
+        login_path=os.getenv("DXTRADE_LOGIN_PATH", "/login"),
+        websocket_path=os.getenv("DXTRADE_WEBSOCKET_PATH", "/websocket"),
         account=os.getenv("DXTRADE_ACCOUNT") or None,
         websocket_url=os.getenv("DXTRADE_WEBSOCKET_URL") or None,
     )
@@ -56,7 +59,7 @@ def main() -> int:
             if "--demo-order" in sys.argv:
                 demo_order(client)
 
-            if os.getenv("DXTRADE_WEBSOCKET_URL"):
+            if os.getenv("DXTRADE_WEBSOCKET_URL") or os.getenv("DXTRADE_WEBSOCKET_PATH"):
                 stream_quotes(client, seconds=15)
             else:
                 log.info("Set DXTRADE_WEBSOCKET_URL (ask your broker) to stream quotes.")
