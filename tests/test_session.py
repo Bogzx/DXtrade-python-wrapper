@@ -218,3 +218,26 @@ def test_rate_limited_order_is_never_retried_automatically(client, api, monkeypa
         client.place_order("EUR/USD", "BUY", 1000, "MARKET")
     assert excinfo.value.status_code == 429
     assert len(api.calls) == 2
+
+
+def test_concurrent_401s_on_one_stale_token_log_in_once(client, api):
+    """A thread whose request failed on a token another thread already replaced
+    must not log in again (that could invalidate the fresh session)."""
+    stale = client._auth_token
+    client._auth_token = "ALREADY-RENEWED"
+    client._relogin(stale_token=stale)
+    assert [c.request.url for c in api.calls].count(f"{API}/login") == 1  # the fixture's
+
+
+def test_relogin_keeps_the_client_authenticated_while_logging_in(client, api):
+    seen = []
+    original = client.login
+
+    def spy():
+        seen.append(client.is_authenticated)
+        original()
+
+    client.login = spy
+    api.add(responses.POST, f"{API}/login", json={"sessionToken": "NEW"})
+    client._relogin(stale_token=client._auth_token)
+    assert seen == [True] and client._auth_token == "NEW"

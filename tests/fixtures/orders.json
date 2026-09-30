@@ -46,6 +46,7 @@
         {
           "instrument": "GBP/USD",
           "positionEffect": "OPEN",
+          "positionCode": "63700",
           "side": "BUY",
           "price": 1.3100,
           "legRatio": 1,

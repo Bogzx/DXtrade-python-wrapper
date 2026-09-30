@@ -1,0 +1,113 @@
+{
+  "orders": [
+    {
+      "account": "default:ACC12345",
+      "version": 447,
+      "orderId": 70001,
+      "orderCode": "sess:grp-entry",
+      "clientOrderId": "grp-entry",
+      "actionCode": "sess:grp-entry",
+      "legCount": 1,
+      "type": "LIMIT",
+      "instrument": "EUR/USD",
+      "status": "WORKING",
+      "finalStatus": false,
+      "legs": [
+        {
+          "instrument": "EUR/USD",
+          "positionEffect": "OPEN",
+          "positionCode": "70001",
+          "price": 1.05,
+          "legRatio": 1,
+          "quantity": 200000,
+          "filledQuantity": 0,
+          "remainingQuantity": 200000
+        }
+      ],
+      "side": "BUY",
+      "tif": "GTC",
+      "issueTime": "2026-09-30T09:00:00.000Z",
+      "transactionTime": "2026-09-30T09:00:00.000Z",
+      "links": [
+        {
+          "linkType": "CHILD",
+          "linkedOrder": "sess:grp-sl",
+          "linkedClientOrderId": "grp-sl"
+        },
+        {
+          "linkType": "CHILD",
+          "linkedOrder": "sess:grp-tp",
+          "linkedClientOrderId": "grp-tp"
+        }
+      ]
+    },
+    {
+      "account": "default:ACC12345",
+      "version": 447,
+      "orderId": 70002,
+      "orderCode": "sess:grp-sl",
+      "clientOrderId": "grp-sl",
+      "actionCode": "sess:grp-sl",
+      "legCount": 1,
+      "type": "STOP",
+      "instrument": "EUR/USD",
+      "status": "WORKING",
+      "finalStatus": false,
+      "legs": [
+        {
+          "instrument": "EUR/USD",
+          "positionEffect": "CLOSE",
+          "positionCode": "70001",
+          "price": 1.0,
+          "legRatio": 1,
+          "filledQuantity": 0
+        }
+      ],
+      "side": "SELL",
+      "tif": "GTC",
+      "issueTime": "2026-09-30T09:00:00.000Z",
+      "transactionTime": "2026-09-30T09:00:00.000Z",
+      "links": [
+        {
+          "linkType": "PARENT",
+          "linkedOrder": "sess:grp-entry",
+          "linkedClientOrderId": "grp-entry"
+        }
+      ]
+    },
+    {
+      "account": "default:ACC12345",
+      "version": 447,
+      "orderId": 70003,
+      "orderCode": "sess:grp-tp",
+      "clientOrderId": "grp-tp",
+      "actionCode": "sess:grp-tp",
+      "legCount": 1,
+      "type": "LIMIT",
+      "instrument": "EUR/USD",
+      "status": "WORKING",
+      "finalStatus": false,
+      "legs": [
+        {
+          "instrument": "EUR/USD",
+          "positionEffect": "CLOSE",
+          "positionCode": "70001",
+          "price": 1.1,
+          "legRatio": 1,
+          "filledQuantity": 0
+        }
+      ],
+      "side": "SELL",
+      "tif": "GTC",
+      "issueTime": "2026-09-30T09:00:00.000Z",
+      "transactionTime": "2026-09-30T09:00:00.000Z",
+      "links": [
+        {
+          "linkType": "PARENT",
+          "linkedOrder": "sess:grp-entry",
+          "linkedClientOrderId": "grp-entry"
+        }
+      ]
+    }
+  ]
+}

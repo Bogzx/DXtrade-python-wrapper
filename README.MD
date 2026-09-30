@@ -49,7 +49,7 @@ with DXTradeClient(
 
     try:
         # Entry + stop loss + take profit in ONE request (an IF-THEN order group):
-        # either all three are accepted or none is.
+        # a rejected request places nothing. SL/TP activate when the entry fills.
         dx.place_order("EUR/USD", "BUY", 10_000, "MARKET", stop_loss=1.0800, take_profit=1.0950)
     except OrderPlacementError as exc:
         print(exc.status_code, exc.error_code, exc.description, exc.ambiguous)
@@ -70,7 +70,7 @@ run `python example.py`. It is read-only unless you pass `--demo-order`.
 | `get_orders()` → `[Order]` | `GET /accounts/{account}/orders` |
 | `get_order_history(limit, **filters)` | `GET /accounts/{account}/orders/history` (e.g. `in_status="COMPLETED"`, `period="today"`) |
 | `place_order(...)` | `POST /accounts/{account}/orders`, as a single order or an IF-THEN group when SL/TP are given |
-| `modify_order(order_id, new_price, new_quantity)` | `PUT /accounts/{account}/orders` with `If-Match` |
+| `modify_order(order_id, new_price, new_quantity)` | `PUT /accounts/{account}/orders` with `If-Match`; a member of a working IF-THEN group is sent as the whole group, so its SL/TP are kept |
 | `cancel_order(order_id)` | `DELETE /accounts/{account}/orders/{code}` with `If-Match` |
 | `close_position(position_id, quantity=None)` | MARKET order with `positionEffect=CLOSE` |
 | `modify_position_sl_tp(position_id, stop_loss, take_profit)` | moves existing protection orders (PUT) or adds them (POST) |
@@ -89,8 +89,9 @@ instead of opening a second position. A read (GET) that is rate-limited (429) wa
 DXtrade's error body: `AuthenticationError` (401/403), `NotFoundError`, `ConflictError`
 (409 business rejection), `PreconditionFailedError` (412), `RateLimitError` (429,
 `retry_after`) and `ServerError`. `OrderPlacementError` adds `order_code` and
-`ambiguous`. `ambiguous=True` means the request timed out after it was sent, so check
-for that `orderCode` before sending again. `ConnectionError` (alias
+`ambiguous`. `ambiguous=True` means the outcome is unknown (a timeout after sending, a
+5xx, or an order group the server acknowledged only in part), so check for that
+`orderCode` before sending again. `ConnectionError` (alias
 `DXTradeConnectionError`) covers network failures.
 
 **Security.** The password and session token are never logged, and the token is not

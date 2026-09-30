@@ -115,6 +115,9 @@ def run_scenario():
         client.place_order("EUR/USD", "BUY", 1000, "LIMIT", price=1.05)
         client.place_order("EUR/USD", "BUY", 1000, "MARKET", stop_loss=1.0, take_profit=1.2)
         client.modify_order("3a4-DEF", new_price=1.3)
+        api.replace(responses.GET, f"{ACC}/orders", json=fixture("orders_group"), headers=etag)
+        client.modify_order("grp-entry", new_price=1.04)
+        api.replace(responses.GET, f"{ACC}/orders", json=fixture("orders"), headers=etag)
         client.cancel_order("3a4-DEF")
         client.close_position("63649")
         client.modify_position_sl_tp("63649", stop_loss=1.08, take_profit=1.1)
@@ -148,8 +151,18 @@ def test_every_request_body_matches_its_schema(spec):
         if "contingencyType" in payload:
             assert set(payload) == {"orders", "contingencyType"}
             assert payload["contingencyType"] in ("IF-THEN", "OCO")
-        for member in members:
+        for index, member in enumerate(members):
             validator(spec, name).validate(member)
+            # Prose rules the schema cannot express (Single Order Request):
+            # positionCode only with CLOSE (IF-THEN children carry neither), and
+            # no order type in replace (PUT) requests.
+            is_then_child = payload.get("contingencyType") == "IF-THEN" and index > 0
+            if "positionCode" in member:
+                assert member.get("positionEffect") == "CLOSE", f"{template}: {member}"
+            elif member.get("positionEffect") == "CLOSE":
+                assert is_then_child, f"{template}: CLOSE without positionCode: {member}"
+            if call.request.method == "PUT":
+                assert "type" not in member, f"{template}: type in a replace request"
             unknown = set(member) - declared(spec, name)
             assert not unknown, f"{template}: fields not in {name}: {unknown}"
             checked += 1
@@ -164,6 +177,7 @@ def test_every_request_body_matches_its_schema(spec):
         ("metrics", "AccountMetricsList"),
         ("positions", "PositionList"),
         ("orders", "OrderList"),
+        ("orders_group", "OrderList"),
         ("history", "OrderList"),
         ("order_response", "OrderResponse"),
         ("group_response", "OrderResponseList"),

@@ -75,7 +75,8 @@ class OrderPlacementError(DXTradeAPIError):
 
     Attributes:
         order_code: The client ``orderCode`` that was sent. When ``ambiguous`` is
-            True (timeout / connection drop after sending) the order may or may
+            True (timeout / connection drop after sending, 5xx, or a group
+            acknowledged only in part) the order may or may
             not exist on the server: look it up by this code, or resend with the
             same ``orderCode`` - DXtrade rejects a duplicate code with 409 /
             error 100 rather than opening a second position.
