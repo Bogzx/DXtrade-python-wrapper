@@ -1,9 +1,10 @@
-# Development/test dependencies.
-#
-# The test suite is fixture-based and needs no broker account:
-#   python -m pytest tests/ -v
-
+# Development/test dependencies. No broker account needed:
+#   python -m pytest
 -r requirements.txt
-
-pytest>=7.0.0
-responses>=0.23.0
+pytest>=7
+responses>=0.23
+jsonschema>=4
+websockets>=12
+ruff>=0.6
+mypy>=1.8
+types-requests
