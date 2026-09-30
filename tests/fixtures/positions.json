@@ -1,0 +1,17 @@
+{
+  "positions": [
+    {
+      "account": "default:ACC12345",
+      "version": 42,
+      "positionCode": "63649",
+      "symbol": "EUR/USD",
+      "quantity": 100000,
+      "quantityNotional": 100000,
+      "side": "BUY",
+      "openTime": "2026-09-30T08:00:00.000Z",
+      "openPrice": 1.0850,
+      "takeProfitPrice": 1.0950,
+      "lastUpdateTime": "2026-09-30T08:00:01.000Z"
+    }
+  ]
+}

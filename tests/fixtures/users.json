@@ -1,0 +1,23 @@
+{
+  "userDetails": [
+    {
+      "login": "user",
+      "domain": "default",
+      "username": "user@default",
+      "version": 7,
+      "fullName": "Test User",
+      "accounts": [
+        {
+          "owner": "user@default",
+          "account": "default:ACC12345",
+          "version": 7,
+          "baseCurrency": "USD",
+          "registrationTime": "2026-01-02T10:00:00.000Z",
+          "accountStatus": "FULL_TRADING",
+          "pricingStream": "default",
+          "positionBased": true
+        }
+      ]
+    }
+  ]
+}

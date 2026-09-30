@@ -1,0 +1,63 @@
+{
+  "orders": [
+    {
+      "account": "default:ACC12345",
+      "orderId": 63655,
+      "orderCode": "3a4-ABC",
+      "version": 42,
+      "clientOrderId": "dxpw-tp-1",
+      "actionCode": "act-1",
+      "legCount": 1,
+      "type": "LIMIT",
+      "instrument": "EUR/USD",
+      "status": "WORKING",
+      "finalStatus": false,
+      "legs": [
+        {
+          "instrument": "EUR/USD",
+          "positionEffect": "CLOSE",
+          "positionCode": "63649",
+          "side": "SELL",
+          "price": 1.0950,
+          "legRatio": 1,
+          "quantity": 0,
+          "filledQuantity": 0,
+          "remainingQuantity": 0
+        }
+      ],
+      "side": "SELL",
+      "tif": "GTC",
+      "issueTime": "2026-09-30T08:00:01.000Z",
+      "transactionTime": "2026-09-30T08:00:01.000Z"
+    },
+    {
+      "account": "default:ACC12345",
+      "orderId": 63700,
+      "orderCode": "3a4-DEF",
+      "version": 42,
+      "clientOrderId": "dxpw-entry-2",
+      "actionCode": "act-2",
+      "legCount": 1,
+      "type": "STOP",
+      "instrument": "GBP/USD",
+      "status": "WORKING",
+      "finalStatus": false,
+      "legs": [
+        {
+          "instrument": "GBP/USD",
+          "positionEffect": "OPEN",
+          "side": "BUY",
+          "price": 1.3100,
+          "legRatio": 1,
+          "quantity": 5000,
+          "filledQuantity": 0,
+          "remainingQuantity": 5000
+        }
+      ],
+      "side": "BUY",
+      "tif": "GTC",
+      "issueTime": "2026-09-30T08:05:00.000Z",
+      "transactionTime": "2026-09-30T08:05:00.000Z"
+    }
+  ]
+}

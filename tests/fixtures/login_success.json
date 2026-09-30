@@ -1,4 +1,4 @@
 {
   "sessionToken": "b3f1c2d4-0000-4a1b-9c8d-EXAMPLE-TOKEN",
-  "accountCode": "default:ACC12345"
+  "timeout": "00:30:00"
 }
