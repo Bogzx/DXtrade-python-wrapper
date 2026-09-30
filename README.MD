@@ -66,7 +66,7 @@ run `python example.py`. It is read-only unless you pass `--demo-order`.
 | `get_accounts()` | `GET /users/{login@domain}` |
 | `get_balance()` → `Balance` | `GET /accounts/{account}/metrics` |
 | `get_account_metrics()`, `get_portfolio()` | raw metrics / portfolio |
-| `get_positions()` → `[Position]` | `GET /accounts/{account}/positions` |
+| `get_positions(include_pnl=False)` → `[Position]` | `GET /accounts/{account}/positions` (+ per-position `fpl` from metrics with `include_pnl=True`) |
 | `get_orders()` → `[Order]` | `GET /accounts/{account}/orders` |
 | `get_order_history(limit, **filters)` | `GET /accounts/{account}/orders/history` (e.g. `in_status="COMPLETED"`, `period="today"`) |
 | `place_order(...)` | `POST /accounts/{account}/orders`, as a single order or an IF-THEN group when SL/TP are given |
@@ -81,7 +81,8 @@ run `python example.py`. It is read-only unless you pass `--demo-order`.
 half the session timeout the server reports). If a request still gets `401` because
 the session expired, the client logs in again once and retries. Retrying an order is
 safe: it keeps its `orderCode`, and DXtrade rejects a duplicate code (409, error 100)
-instead of opening a second position.
+instead of opening a second position. A read (GET) that is rate-limited (429) waits out
+`Retry-After` (up to 5s) and retries once. Orders are never retried automatically on 429.
 
 **Errors.** Everything derives from `DXTradeWrapperError`. Server errors are
 `DXTradeAPIError` subclasses carrying `status_code`, `error_code` and `description` from
