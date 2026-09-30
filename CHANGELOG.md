@@ -33,6 +33,8 @@ Spec-conformant; not yet verified against a live broker.
 - One automatic re-login on 401; keepalive capped by the server's session timeout.
 - Account discovery via `GET /users/{login@domain}`; `get_accounts()`,
   `get_account_metrics()`, `get_portfolio()`, `close_all()` (bulk close).
+- `get_positions(include_pnl=True)` (floating P/L from per-position metrics);
+  one automatic retry of rate-limited (429) GETs.
 - Context manager, `DXTradeClient` alias, `pyproject.toml`, `py.typed`.
 - Conformance tests against the official OpenAPI document; Push tests over a real
   local websocket; offline demo.
