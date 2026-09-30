@@ -288,6 +288,7 @@ class DXTradeDashboardWrapper:
         orderCode.
         """
         url = self._url(path)
+        token_used = self._auth_token
         response = self._send(method, url, context, json_body, params, headers)
         if response.status_code == 429 and method == "GET":
             # Reads are idempotent: wait as asked (briefly) and try once more.
@@ -304,7 +305,7 @@ class DXTradeDashboardWrapper:
             and self._is_authenticated
         ):
             self._logger.info("%s got 401; session expired, logging in again", context)
-            self._relogin()
+            self._relogin(stale_token=token_used)
             return self._request(
                 method, path, context,
                 json_body=json_body, params=params, headers=headers, retry_auth=False,
@@ -409,9 +410,16 @@ class DXTradeDashboardWrapper:
             self._start_keepalive()
             self._logger.info("Authenticated as %s", self._username)
 
-    def _relogin(self) -> None:
+    def _relogin(self, stale_token: Optional[str] = None) -> None:
+        """Logs in again, unless another thread already replaced ``stale_token``.
+
+        Two threads that both get 401 on the same expired token must not both log
+        in: the second login could invalidate the session the first just made.
+        """
         with self._auth_lock:
-            self._is_authenticated = False
+            if (stale_token is not None and self._is_authenticated
+                    and self._auth_token != stale_token):
+                return
             self.login()
 
     def logout(self) -> None:
@@ -488,9 +496,10 @@ class DXTradeDashboardWrapper:
         while not self._keepalive_stop.wait(self._effective_keepalive() or 60.0):
             if not self._is_authenticated:
                 break
+            token = self._auth_token
             if not self.ping() and self._auto_relogin:
                 try:
-                    self._relogin()
+                    self._relogin(stale_token=token)
                 except Exception as exc:  # noqa: BLE001 - keep the thread alive
                     self._logger.warning("Re-login after failed ping failed: %s", exc)
 
@@ -677,8 +686,15 @@ class DXTradeDashboardWrapper:
         except DXTradeAPIError as exc:
             if isinstance(exc, AuthenticationError) and not self._is_authenticated:
                 raise
+            # A 5xx (often a gateway timeout) does not say whether the order reached
+            # the matching engine, so the outcome is unknown, like a read timeout.
+            unknown = isinstance(exc, ServerError)
+            message = str(exc)
+            if unknown:
+                message += (f". The order may have been placed: check for orderCode "
+                            f"{order_code!r} before retrying, or resend with the same orderCode.")
             raise OrderPlacementError(
-                str(exc), order_code=order_code, status_code=exc.status_code,
+                message, order_code=order_code, ambiguous=unknown, status_code=exc.status_code,
                 error_code=exc.error_code, description=exc.description, body=exc.body,
             ) from exc
         return self._json(response, context)
@@ -705,11 +721,15 @@ class DXTradeDashboardWrapper:
             order_type: "MARKET", "LIMIT" or "STOP".
             price: Limit price (LIMIT) or stop price (STOP).
             stop_loss, take_profit: Protection prices. They are sent in the same
-                request as an IF-THEN order group, so the entry and its protections
-                are accepted or rejected together - there is no window with an
-                unprotected position. The spec allows order groups only on
-                position-based accounts; elsewhere the server rejects the request
-                and nothing is placed.
+                request as an IF-THEN order group, so there is no window where the
+                entry is live and its protections have not been sent yet. If the
+                request is rejected, none of it is placed. The protections only
+                become active when the entry fills; the spec does not say how a
+                protection rejected at that point (e.g. a stop already through the
+                market) is reported, so check get_orders() after placing. If the
+                server acknowledges fewer orders than were sent, this raises an
+                ambiguous OrderPlacementError. The spec allows order groups only on
+                position-based accounts; elsewhere the server rejects the request.
             position_effect: "OPEN" or "CLOSE" (CLOSE needs positionCode=...).
             tif: "GTC", "DAY" or "GTD" (GTD needs expireDate=...; MARKET only GTC).
             **kwargs: Extra SingleOrderRequest fields (positionCode, expireDate,
@@ -792,7 +812,19 @@ class DXTradeDashboardWrapper:
             }
             group_orders.append(leg)
         body = {"orders": group_orders, "contingencyType": "IF-THEN"}
-        return self._post_order(body, order_code, "Place order with protection")
+        result = self._post_order(body, order_code, "Place order with protection")
+        responses = result.get("orderResponses") if isinstance(result, Mapping) else result
+        if isinstance(responses, list) and len(responses) < len(group_orders):
+            # The spec answers a group with one OrderResponse per order. Fewer means
+            # a protection may be missing while the entry stands: say so loudly.
+            raise OrderPlacementError(
+                f"Place order with protection: sent {len(group_orders)} orders but the "
+                f"server acknowledged {len(responses)}. The entry {order_code!r} may be "
+                "working or filled WITHOUT its stop loss / take profit: check get_orders() "
+                "and get_positions() now.",
+                order_code=order_code, ambiguous=True, body=result,
+            )
+        return result
 
     def _find_open_order(self, orders: List[JSON], order_id: str) -> JSON:
         for order in orders:
@@ -823,7 +855,9 @@ class DXTradeDashboardWrapper:
             "side": order.get("side") or leg.get("side"),
             "tif": order.get("tif"),
         }
-        if leg.get("positionCode"):
+        # The Open Orders listing gives OPEN legs a positionCode too (the order's
+        # own id), but the spec says it "must be omitted" unless the effect is CLOSE.
+        if leg.get("positionEffect") == "CLOSE" and leg.get("positionCode"):
             body["positionCode"] = leg["positionCode"]
         if order.get("expireDate"):
             body["expireDate"] = order["expireDate"]
@@ -844,17 +878,31 @@ class DXTradeDashboardWrapper:
             body.update(extra)
         return {k: v for k, v in body.items() if v is not None}
 
-    def _conditional(self, method: str, path: str, context: str, body: Optional[JSON],
-                     etag: Optional[str], refetch: Callable[[], Optional[str]],
-                     fetched: Optional[str] = None) -> Any:
-        """PUT/DELETE with If-Match; on 412 re-reads the ETag and retries once.
+    def _conditional(
+        self,
+        method: str,
+        path: str,
+        context: str,
+        etag: Optional[str],
+        build: Optional[Callable[[List[JSON]], JSON]] = None,
+        prefetched: Optional[Tuple[List[JSON], Optional[str]]] = None,
+    ) -> Any:
+        """PUT/DELETE with If-Match; on 412 re-reads the orders and retries once.
 
-        ``etag`` is a caller-supplied value (never retried: the caller asked for
-        that exact version). ``fetched`` is one this client just read.
+        ``build(orders)`` makes the request body from the current open orders. It
+        runs again on the retry, so a 412 never resends a body built from the
+        stale state the server just refused. ``etag`` is a caller-supplied value
+        (never retried: the caller asked for that exact version).
         """
         auto = etag is None
-        tag = etag or fetched or refetch()
         for attempt in (1, 2):
+            tag, body = etag, None
+            if auto or build is not None:
+                orders, fetched = prefetched or self._open_orders_raw()
+                prefetched = None
+                tag = etag or fetched
+                if build is not None:
+                    body = build(orders)
             if not tag:
                 raise DXTradeAPIError(
                     f"{context}: the server sent no ETag with the order list, and the spec "
@@ -867,9 +915,78 @@ class DXTradeDashboardWrapper:
             except PreconditionFailedError:
                 if not auto or attempt == 2:
                     raise
-                self._logger.info("%s: ETag changed, re-reading and retrying", context)
-                tag = refetch()
+                self._logger.info("%s: orders changed, re-reading and retrying", context)
         return None  # pragma: no cover
+
+    def _find_linked(self, orders: List[JSON], link: Mapping[str, Any]) -> Optional[JSON]:
+        wanted = {str(link.get("linkedOrder")), str(link.get("linkedClientOrderId"))} - {"None"}
+        for order in orders:
+            if {str(order.get("orderCode")), str(order.get("clientOrderId"))} & wanted:
+                return order
+        return None
+
+    def _working_group(self, orders: List[JSON], order: Mapping[str, Any]) -> Optional[List[JSON]]:
+        """The working IF-THEN group ``order`` belongs to, parent first, or None.
+
+        Per the spec's Modify Order example 1, a single-order PUT for the parent of
+        an IF-THEN group turns the group into a single order: its stop loss and take
+        profit disappear. So group members are always modified as a whole group.
+        """
+        links = order.get("links") or []
+        if any(link.get("linkType") == "OCO" for link in links):
+            raise DXTradeAPIError(
+                "Order is part of an OCO group; modifying OCO groups is not supported "
+                "(a single-order PUT would break the group). Nothing was sent."
+            )
+        parent: Optional[Mapping[str, Any]] = order
+        if not any(link.get("linkType") == "CHILD" for link in links):
+            parent_link = next((lk for lk in links if lk.get("linkType") == "PARENT"), None)
+            # A filled parent is no longer a working order: the children are then
+            # plain protections on the position and are modified on their own.
+            parent = self._find_linked(orders, parent_link) if parent_link else None
+        if parent is None:
+            return None
+        group = [dict(parent)]
+        for link in parent.get("links") or []:
+            if link.get("linkType") != "CHILD":
+                continue
+            child = self._find_linked(orders, link)
+            if child is None:
+                raise DXTradeAPIError(
+                    f"Order group of {parent.get('clientOrderId') or parent.get('orderCode')!r} "
+                    f"lists child {link.get('linkedClientOrderId') or link.get('linkedOrder')!r}, "
+                    "which is not a working order; refusing to send a group PUT that would "
+                    "drop it. Nothing was sent."
+                )
+            group.append(child)
+        return group
+
+    def _modify_body(
+        self,
+        orders: List[JSON],
+        order: Mapping[str, Any],
+        price: Optional[float] = None,
+        quantity: Optional[float] = None,
+        extra: Optional[Mapping[str, Any]] = None,
+    ) -> JSON:
+        """The PUT body changing ``order``: a single order, or its whole IF-THEN group
+        (REST spec, Modify Order example 2b) with only ``order`` changed."""
+        group = self._working_group(orders, order)
+        if group is None:
+            return self._replace_request(order, price, quantity, extra)
+        target = str(order.get("orderCode"))
+        members = []
+        for index, member in enumerate(group):
+            if str(member.get("orderCode")) == target:
+                body = self._replace_request(member, price, quantity, extra)
+            else:
+                body = self._replace_request(member)
+            if index > 0:
+                # THEN orders as in the spec's group examples: zero quantity, no positionCode.
+                body.pop("positionCode", None)
+                body["quantity"] = 0
+            members.append(body)
+        return {"orders": members, "contingencyType": "IF-THEN"}
 
     def modify_order(
         self,
@@ -893,21 +1010,21 @@ class DXTradeDashboardWrapper:
         """
         if new_price is None and new_quantity is None and not kwargs:
             raise ValueError("At least one parameter to modify must be provided")
-        orders, fetched_tag = self._open_orders_raw()
-        order = self._find_open_order(orders, order_id)
-        body = self._replace_request(order, new_price, new_quantity, kwargs)
-        return self._conditional(
-            "PUT", self._account_path("orders"), "Modify order", body,
-            etag, lambda: self._open_orders_raw()[1], fetched=fetched_tag,
-        )
+        prefetched = self._open_orders_raw()
+        self._find_open_order(prefetched[0], order_id)  # fail fast on an unknown id
+
+        def build(orders: List[JSON]) -> JSON:
+            order = self._find_open_order(orders, order_id)
+            return self._modify_body(orders, order, new_price, new_quantity, kwargs)
+
+        return self._conditional("PUT", self._account_path("orders"), "Modify order",
+                                 etag, build, prefetched=prefetched)
 
     def cancel_order(self, order_id: str, etag: Optional[str] = None) -> Any:
         """Cancels a working order: DELETE /accounts/{account}/orders/{code} with If-Match."""
         self._check_authenticated()
         path = self._account_path(f"orders/{self._seg(order_id)}")
-        result = self._conditional(
-            "DELETE", path, "Cancel order", None, etag, lambda: self._open_orders_raw()[1]
-        )
+        result = self._conditional("DELETE", path, "Cancel order", etag)
         return result if result is not None else {"success": True, "order_id": order_id}
 
     def _find_position(self, position_id: str) -> Position:
@@ -915,6 +1032,16 @@ class DXTradeDashboardWrapper:
             if position.position_id == str(position_id):
                 return position
         raise NotFoundError(f"No open position {position_id!r}")
+
+    @staticmethod
+    def _find_protection(orders: List[JSON], kind: str, position_code: str) -> Optional[JSON]:
+        return next(
+            (o for o in orders
+             if str(o.get("type", "")).upper() == kind
+             and order_leg(o).get("positionCode") == position_code
+             and order_leg(o).get("positionEffect") == "CLOSE"),
+            None,
+        )
 
     def close_position(self, position_id: str, quantity: Optional[float] = None) -> Any:
         """Closes a position fully or partially with a MARKET order linked to it.
@@ -984,19 +1111,18 @@ class DXTradeDashboardWrapper:
                                  ("take_profit", "LIMIT", take_profit)):
             if value is None:
                 continue
-            orders, tag = self._open_orders_raw()
-            existing = next(
-                (o for o in orders
-                 if str(o.get("type", "")).upper() == kind
-                 and order_leg(o).get("positionCode") == position.position_id
-                 and order_leg(o).get("positionEffect") == "CLOSE"),
-                None,
-            )
+            prefetched = self._open_orders_raw()
+            existing = self._find_protection(prefetched[0], kind, position.position_id)
             if existing is not None:
-                body = self._replace_request(existing, price=value)
+                code = str(existing.get("orderCode"))
+
+                def build(orders: List[JSON], code: str = code, value: float = value) -> JSON:
+                    current = self._find_open_order(orders, code)
+                    return self._modify_body(orders, current, price=value)
+
                 results[key] = self._conditional(
-                    "PUT", self._account_path("orders"), f"Modify {key}", body, None,
-                    lambda: self._open_orders_raw()[1], fetched=tag,
+                    "PUT", self._account_path("orders"), f"Modify {key}", None, build,
+                    prefetched=prefetched,
                 )
             else:
                 order_code = self._generate_order_code()

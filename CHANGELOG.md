@@ -6,6 +6,20 @@ Rebuilt against the public DXtrade REST/Push specification
 (https://demo.dx.trade/developers/, OpenAPI at /dxsca-web/swagger/openapi.json).
 Spec-conformant; not yet verified against a live broker.
 
+### Fixed in independent review
+- `modify_order` on the entry (or a pending SL/TP) of an IF-THEN group sent a single
+  order, which per the spec turns the group into a single order and drops its stop
+  loss and take profit. Group members are now modified as the whole group; OCO members
+  and groups with a missing child are refused with nothing sent.
+- Modify requests carried `positionCode` on OPEN orders (the order list includes it;
+  the spec says it must be omitted unless CLOSE).
+- A 412 retry resent the body built from the stale order; it is now rebuilt from the
+  re-read order.
+- A 5xx on order placement, or a group acknowledged with fewer order responses than
+  orders sent, is now `ambiguous=True`.
+- Two threads hitting 401 on the same expired token no longer both log in.
+- Build requirement raised to setuptools>=77 (needed for the SPDX `license` string).
+
 ### Fixed (each would have failed at any broker)
 - Stop loss / take profit were never placed: they waited for a `positionCode` the
   order response does not contain. Now one atomic IF-THEN order group.

@@ -280,3 +280,128 @@ def test_modify_sl_tp_moves_existing_tp_and_adds_missing_sl(client, api):
 def test_modify_sl_tp_requires_a_value(client):
     with pytest.raises(ValueError):
         client.modify_position_sl_tp("63649")
+
+
+# --- review 2026-09-30: IF-THEN groups, stale 412 bodies, acknowledged legs -------
+
+def group_orders_with_etag(api, data=None, etag='"g1"'):
+    api.add(responses.GET, f"{ACC}/orders", json=data or fixture("orders_group"),
+            headers={"ETag": etag})
+
+
+def test_modify_open_order_omits_its_own_position_code(client, api):
+    """The Open Orders listing gives an OPEN leg positionCode == its orderId; the
+    spec says positionCode must be omitted unless positionEffect is CLOSE."""
+    orders_with_etag(api)
+    api.add(responses.PUT, f"{ACC}/orders", json=fixture("order_response"))
+    client.modify_order("3a4-DEF", new_price=1.305)
+    assert "positionCode" not in body(api.calls[-1])
+
+
+def test_modifying_a_group_parent_resends_the_whole_group(client, api):
+    """Spec, Modify Order example 1: a single-order PUT for the parent of an IF-THEN
+    group turns it into a single order - the stop loss and take profit vanish."""
+    group_orders_with_etag(api)
+    api.add(responses.PUT, f"{ACC}/orders", json=fixture("group_response"),
+            match=[matchers.header_matcher({"If-Match": '"g1"'})])
+
+    client.modify_order("grp-entry", new_price=1.04)
+
+    put = body(api.calls[-1])
+    assert put["contingencyType"] == "IF-THEN"
+    entry, sl, tp = put["orders"]
+    assert entry == {"account": ACCOUNT, "orderCode": "grp-entry", "instrument": "EUR/USD",
+                     "positionEffect": "OPEN", "side": "BUY", "tif": "GTC",
+                     "quantity": 200000, "limitPrice": 1.04}
+    assert sl == {"account": ACCOUNT, "orderCode": "grp-sl", "instrument": "EUR/USD",
+                  "positionEffect": "CLOSE", "side": "SELL", "tif": "GTC",
+                  "quantity": 0, "stopPrice": 1.00}
+    assert tp["orderCode"] == "grp-tp" and tp["limitPrice"] == 1.10 and tp["quantity"] == 0
+    assert all("type" not in o for o in put["orders"])
+
+
+def test_modifying_a_pending_groups_stop_loss_keeps_the_group(client, api):
+    group_orders_with_etag(api)
+    api.add(responses.PUT, f"{ACC}/orders", json=fixture("group_response"))
+    client.modify_order("grp-sl", new_price=1.01)
+    entry, sl, tp = body(api.calls[-1])["orders"]
+    assert entry["orderCode"] == "grp-entry" and entry["limitPrice"] == 1.05
+    assert sl["stopPrice"] == 1.01 and tp["limitPrice"] == 1.10
+
+
+def test_child_of_a_filled_parent_is_modified_on_its_own(client, api):
+    data = fixture("orders_group")
+    data["orders"] = data["orders"][1:]  # entry filled: no longer a working order
+    group_orders_with_etag(api, data)
+    api.add(responses.PUT, f"{ACC}/orders", json=fixture("order_response"))
+    client.modify_order("grp-sl", new_price=1.01)
+    put = body(api.calls[-1])
+    assert put["orderCode"] == "grp-sl" and put["stopPrice"] == 1.01
+    assert put["positionCode"] == "70001" and "quantity" not in put
+
+
+def test_group_with_a_missing_child_is_not_modified(client, api):
+    data = fixture("orders_group")
+    del data["orders"][2]
+    group_orders_with_etag(api, data)
+    with pytest.raises(DXTradeAPIError, match="not a working order"):
+        client.modify_order("grp-entry", new_price=1.04)
+    assert not [c for c in api.calls if c.request.method == "PUT"]
+
+
+def test_oco_member_is_not_modified_with_a_single_put(client, api):
+    data = fixture("orders")
+    data["orders"][1]["links"] = [{"linkType": "OCO", "linkedOrder": "3a4-ABC"}]
+    orders_with_etag(api)
+    api.replace(responses.GET, f"{ACC}/orders", json=data, headers={"ETag": '"v42"'})
+    with pytest.raises(DXTradeAPIError, match="OCO"):
+        client.modify_order("3a4-DEF", new_price=1.3)
+    assert not [c for c in api.calls if c.request.method == "PUT"]
+
+
+def test_412_retry_rebuilds_the_body_from_the_fresh_order(client, api):
+    """Retrying the body built from the stale read would silently undo whatever
+    change caused the 412 - exactly what If-Match exists to prevent."""
+    orders_with_etag(api, '"v42"')
+    api.add(responses.PUT, f"{ACC}/orders", status=412)
+    changed = fixture("orders")
+    changed["orders"][1]["legs"][0]["quantity"] = 7000
+    api.add(responses.GET, f"{ACC}/orders", json=changed, headers={"ETag": '"v43"'})
+    api.add(responses.PUT, f"{ACC}/orders", json=fixture("order_response"),
+            match=[matchers.header_matcher({"If-Match": '"v43"'})])
+
+    client.modify_order("3a4-DEF", new_price=1.3)
+
+    first, retry = [body(c) for c in api.calls if c.request.method == "PUT"]
+    assert first["quantity"] == 5000
+    assert retry["quantity"] == 7000 and retry["stopPrice"] == 1.3
+
+
+def test_group_acknowledging_fewer_orders_than_sent_is_loud(client, api):
+    api.add(responses.POST, f"{ACC}/orders",
+            json={"orderResponses": [{"orderId": 1, "updateOrderId": 1}]})
+    with pytest.raises(OrderPlacementError, match="WITHOUT its stop loss") as excinfo:
+        client.place_order("EUR/USD", "BUY", 1000, "MARKET", stop_loss=1.0, take_profit=1.2,
+                           orderCode="entry-7")
+    assert excinfo.value.ambiguous is True and excinfo.value.order_code == "entry-7"
+
+
+def test_close_short_position_buys_it_back(client, api):
+    data = fixture("positions")
+    data["positions"][0]["side"] = "SELL"
+    api.add(responses.GET, f"{ACC}/positions", json=data)
+    api.add(responses.POST, f"{ACC}/orders", json=fixture("order_response"))
+    client.close_position("63649", quantity=25000)
+    order = body(api.calls[-1])
+    assert order["side"] == "BUY" and order["quantity"] == 25000
+    assert order["positionEffect"] == "CLOSE" and order["positionCode"] == "63649"
+
+
+@pytest.mark.parametrize("status", [500, 502, 504])
+def test_server_error_on_placement_is_flagged_ambiguous(client, api, status):
+    """A gateway timeout says nothing about whether the order was placed; calling
+    it unambiguous invites a resend with a new orderCode, i.e. a duplicate."""
+    api.add(responses.POST, f"{ACC}/orders", status=status, body="upstream timed out")
+    with pytest.raises(OrderPlacementError) as excinfo:
+        client.place_order("EUR/USD", "BUY", 1000, "MARKET", orderCode="k-5")
+    assert excinfo.value.ambiguous is True and "k-5" in str(excinfo.value)
