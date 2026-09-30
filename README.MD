@@ -1,293 +1,164 @@
-# 📊 DXTrade Python API Wrapper
+# 📊 DXtrade Python Wrapper
 
-![Python](https://img.shields.io/badge/python-3.7+-blue.svg)
-![Status](https://img.shields.io/badge/status-not%20functional%20%7C%20untested%20prototype-red)
-![Protocol](https://img.shields.io/badge/protocol-unverified-lightgrey)
+![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
+![Status](https://img.shields.io/badge/status-spec--conformant%20%7C%20not%20live--verified-orange)
+[![CI](https://github.com/Bogzx/DXtrade-python-wrapper/actions/workflows/ci.yml/badge.svg)](https://github.com/Bogzx/DXtrade-python-wrapper/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-> **Read this first:** this wrapper has never successfully completed a single call
-> against a real DXtrade server. It is published as a **writeup of a failed
-> reverse-engineering attempt**, not as a usable client. If you need a working
-> DXtrade client, see [Use this instead](#-use-this-instead).
+A typed Python client for the [DXtrade](https://dx.trade) broker platform's REST and
+Push (WebSocket) APIs. It covers login and session upkeep, balance, positions, orders,
+placing orders with stop loss / take profit, modify, cancel, close, and live quotes and
+account updates. Prop-firm and retail traders use DXtrade.
 
-## 📋 Table of Contents
+> **Status: spec-conformant, not live-verified.** Every request follows Devexperts'
+> public [DXtrade API documentation](https://demo.dx.trade/developers/), and the test
+> suite checks the client against their published
+> [OpenAPI document](https://demo.dx.trade/dxsca-web/swagger/openapi.json). It has
+> **not** yet been run against a live broker. Try it on a **demo account** first. Brokers
+> decide whether to enable REST access at all (FTMO turned it off in April 2024).
 
-- [Project Status](#-project-status-not-functional--untested-prototype)
-- [Use this instead](#-use-this-instead)
-- [What this repo is actually good for](#-what-this-repo-is-actually-good-for)
-- [What was learned](#-what-was-learned)
-- [Introduction](#-introduction)
-- [Features (as designed, none verified)](#-features-as-designed-none-verified)
-- [Alternative Approaches](#-alternative-approaches)
-- [Installation](#-installation)
-- [Tests](#-tests)
-- [Packaging](#-packaging)
-- [Disclaimer](#-disclaimer)
-
-## ⚠️ Project Status: Not Functional — Untested Prototype
-
-This code has **demonstrably never been executed successfully against a live
-DXtrade server.** An earlier version of this README said "Not Currently
-Functional with FTMO," which implied the wrapper worked elsewhere and that FTMO
-was the only obstacle. That was wrong, and it wasted readers' time. There are
-**four** reasons this does not work, and **three of them are mine.**
-
-### Cause 1 — FTMO discontinued REST access (vendor policy, not fixable)
-
-As of late April 2024, **FTMO discontinued REST API access to the DXtrade
-platform for its clients.** See [Trading Update – 25 Apr 2024](https://ftmo.com/en/trading-updates/trading-update-25-apr-2024/).
-Authenticating against FTMO returns `403 Forbidden` and no code change will
-alter that. FTMO was the headline use case for this repo, and it is closed
-permanently.
-
-**This is the cause the old README named — and stopping there is what hid the
-next three for two years.** A `403` at login is indistinguishable from a
-policy block, so the author attributed the failure to FTMO and never looked
-further. The bugs below were found by a code review in 2026, not by running
-anything.
-
-### Cause 2 — every REST path after login omitted the `/dxsca-web` prefix (mine)
-
-`login()` correctly used `/dxsca-web/login`. **Every single other endpoint** —
-portfolio, positions, orders, history, order placement, modification,
-cancellation, position close — was built straight off the bare host, with no
-prefix. All eight would have returned `404` **at any broker on earth**, not
-just FTMO. Even if FTMO had kept REST access enabled, nothing past
-authentication would have worked.
-
-Because login was never reached at FTMO, this bug never got the chance to
-surface.
-
-**Fixed (UNVERIFIED):** the prefix is now a constructor argument (`api_prefix`,
-default `/dxsca-web`) and every URL is built by a single `_url(path)` helper.
-The point of routing through one helper rather than patching eight f-strings is
-that this class of bug cannot silently recur.
-
-### Cause 3 — wrong authorization scheme (mine)
-
-The wrapper sent `Authorization: Bearer <token>`. DXtrade SCA uses a custom
-scheme: `Authorization: DXAPI <sessionToken>`. Every authenticated request
-would have been rejected with `401`, on top of already being sent to a
-prefix-less URL.
-
-**Fixed (UNVERIFIED):** now sends `DXAPI`, via the `AUTH_SCHEME` class
-attribute.
-
-### Cause 4 — order payload missing required fields (mine)
-
-The order payload omitted both:
-
-* **`account`** — the account the order belongs to, and
-* **`orderCode`** — a client-generated idempotency key that DXtrade requires.
-
-Orders would have been rejected at validation even had they reached the correct
-URL with a valid session. `orderCode` is the field that makes retrying a
-timed-out order safe rather than a way to accidentally open a second position.
-
-**Fixed (UNVERIFIED):** both fields are now populated;
-`orderCode` is auto-generated per order and can be overridden by the caller.
-
-### ⚠️ What "Fixed (UNVERIFIED)" means here
-
-It means **fixed by reading, not by running.** Confirming any of these requires
-a funded or demo account at a broker that still enables DXtrade SCA REST
-access. I do not have one. SCA access is provisioned per firm, so there is no
-universal endpoint set to test against either.
-
-Everything in this repository — URL paths, the authorization scheme, payload
-field names, the login response shape, the WebSocket handshake, the `/ping`
-keepalive endpoint — remains **inferred from community examples and a
-third-party development guide.** Some of it is probably still wrong. The
-included tests assert that the wrapper *builds the requests it intends to
-build*; they cannot and do not assert that a DXtrade server accepts them.
-
-**Do not point this at a funded account.**
-
-### Other known defects, fixed but likewise unverified
-
-| Defect | Was |
-| --- | --- |
-| Account-code fallback | Returned the invented code `"primary"` when login carried no account, guaranteeing a `404` at a nonexistent account. Now raises `DXTradeAPIError` with an actionable message. |
-| No session keepalive | Sessions expired silently with no renewal. Now has a `ping()` method and an optional background keepalive thread. |
-| `logout()` was a no-op | Its HTTP call was commented out "pending documentation," so sessions were left alive server-side. Now issues the request, best-effort. |
-| Dead WebSocket auth header | Guarded by `"token=" not in self._build_websocket_url()` — tautologically false whenever a token existed, so the header was never sent once. |
-| Malformed WebSocket URL | Appended `&account=` unconditionally but `?token=` only when a token existed, producing a query string whose first parameter began with `&`. Now built with `urlencode()`. |
-
-## ✅ Use this instead
-
-If you want to actually trade on DXtrade from Python, use
-**[`dxtrade-sdk`](https://pypi.org/project/dxtrade-sdk/)** — it is
-pip-installable and tested, which this is not.
+## ⚡ Quick start (no broker account needed)
 
 ```bash
-pip install dxtrade-sdk
+git clone https://github.com/Bogzx/DXtrade-python-wrapper.git
+cd DXtrade-python-wrapper
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[test]"
+python examples/offline_demo.py
 ```
 
-This repository is not a competitor to it and should not be treated as one.
+The demo runs the client against a simulated DXtrade server: it logs in, reads the
+balance, positions and orders, places an entry with SL/TP, modifies, cancels, and logs
+out. Then it prints every HTTP request that would have gone to a real broker.
 
-## 🔍 What this repo is actually good for
+## 🔌 With a real (demo) account
 
-Not as a library. As a **case study in reverse-engineering an undocumented
-broker API from community examples, and getting it wrong.**
+```python
+from dxtrade_wrapper import DXTradeClient, OrderPlacementError
 
-The useful content is:
+with DXTradeClient(
+    base_url="https://dxtrade.your-broker.com",
+    username="your-login",
+    password="...",
+    domain_or_vendor="default",
+    account="default:ACC12345",      # optional if you have exactly one account
+) as dx:
+    print(dx.get_balance())           # equity, balance, margin, free margin, P/L
+    print(dx.get_positions())
+    print(dx.get_orders())
 
-* A complete, commented model of what the DXtrade SCA REST/WebSocket surface
-  was *believed* to look like from public information alone (`dxtrade_wrapper.py`).
-* A concrete record of **how a vendor-side block masked three independent
-  client-side bugs for two years.** The `403` was real, it was correctly
-  diagnosed, and diagnosing it correctly was exactly what stopped anyone from
-  looking any further.
-* A demonstration of why "it fails at step 1 for a known external reason" is a
-  dangerous place to stop debugging.
-
-## 🎓 What was learned
-
-1. **A correct diagnosis can still be an incomplete one.** FTMO really did
-   disable REST access. That true fact absorbed all the suspicion a `403`
-   generates and no one looked past it.
-2. **Test at the boundary you control.** Not one line of this needed a broker to
-   verify the URL it constructs. The single test asserting that login hits
-   `/dxsca-web/login` with a `DXAPI` header would have caught two of the three
-   blockers, offline, in the first hour. It now exists — two years late.
-3. **One code path, not eight.** The prefix bug was possible only because URL
-   construction was duplicated across eight f-strings. One `_url()` helper makes
-   the whole class of bug structurally impossible.
-4. **Don't ship a plausible fallback for missing data.** The `"primary"` account
-   code turned a clear "I don't know the account" into a misleading `404` from
-   the server.
-5. **Publishing an honest failure beats publishing a hopeful half-success.** A
-   README that says "works, mostly, probably" costs every reader the time to
-   discover otherwise.
-
-## 🔍 Introduction
-
-`DXTradeDashboardWrapper` was intended to simplify interaction with the DXtrade
-trading platform's API, abstracting REST and WebSocket calls behind a dashboard-
-oriented interface: authentication, account data, order management, and
-real-time streams.
-
-It was written from a Development Guide that itself relied on publicly available
-information and community examples, because official, comprehensive DXtrade API
-documentation was not accessible. That inference chain is the root cause of
-causes 2 through 4 above.
-
-## ✨ Features (as designed, none verified)
-
-Everything below describes **intent**. No item has been confirmed to work.
-
-### 🔐 Authentication
-* Login with username, password, and broker domain/vendor
-* Session token handling, `DXAPI` scheme *(unverified)*
-* `ping()` keepalive plus optional background thread *(unverified endpoint)*
-
-### 📈 Account Data Access
-* `get_balance()`, `get_positions()`, `get_orders()`, `get_order_history()`
-* Structured returns via dataclasses
-
-### 🛒 Order Management
-* `place_order()` — Market, Limit, Stop
-* `modify_order()`, `cancel_order()`
-* `close_position()`, `modify_position_sl_tp()`
-* Linked Stop Loss / Take Profit handling
-
-### 🔄 Real-Time Data
-* `connect_websocket()` / `disconnect_websocket()`
-* `subscribe_market_data()`, `subscribe_account_updates()`
-* Thread-safe queues: `price_update_queue`, `order_update_queue`,
-  `account_update_queue`
-
-### 🚦 Error Handling
-* Custom exception hierarchy, logging throughout
-
-## 🔄 Alternative Approaches
-
-Some community implementations interact with DXtrade by mimicking the browser:
-
-1. Authenticating via internal endpoints (e.g. `/api/auth/login`) using **session
-   cookies** rather than API tokens
-2. Scraping a **CSRF token** from the web application page
-3. Using the web app's internal WebSocket endpoint (e.g. `/client/connector`)
-4. Posting orders to internal endpoints (e.g. `/api/orders/single`) with cookies
-   and CSRF token
-
-> **⚠️ Caution:** this is reverse-engineering the web platform. It is **highly
-> fragile** and **may violate your broker's Terms of Service**. Not recommended.
-
-## 📦 Installation
-
-There is no package to install — see [Packaging](#-packaging). Clone the repo and
-install the dependencies.
-
-### Dependencies
-
-* `requests` — HTTP REST calls
-* `websocket-client` — WebSocket connections
-* `python-dotenv` — used by `example.py` to load `.env`
-  *(previously missing from this list, so following the README broke the
-  example at `example.py:8`)*
-
-```bash
-pip install requests websocket-client python-dotenv
+    try:
+        # Entry + stop loss + take profit in ONE request (an IF-THEN order group):
+        # either all three are accepted or none is.
+        dx.place_order("EUR/USD", "BUY", 10_000, "MARKET", stop_loss=1.0800, take_profit=1.0950)
+    except OrderPlacementError as exc:
+        print(exc.status_code, exc.error_code, exc.description, exc.ambiguous)
 ```
 
-Or:
+Or put your settings in `.env` (see `.env.example`), `pip install -e ".[examples]"` and
+run `python example.py`. It is read-only unless you pass `--demo-order`.
 
-```bash
-pip install -r requirements.txt
-```
+## 📚 API
 
-### Configuration
+| Method | DXtrade endpoint |
+|---|---|
+| `login()` / `logout()` / `ping()` | `POST /login`, `/logout`, `/ping` (token auth, `Authorization: DXAPI <token>`) |
+| `get_accounts()` | `GET /users/{login@domain}` |
+| `get_balance()` → `Balance` | `GET /accounts/{account}/metrics` |
+| `get_account_metrics()`, `get_portfolio()` | raw metrics / portfolio |
+| `get_positions()` → `[Position]` | `GET /accounts/{account}/positions` |
+| `get_orders()` → `[Order]` | `GET /accounts/{account}/orders` |
+| `get_order_history(limit, **filters)` | `GET /accounts/{account}/orders/history` (e.g. `in_status="COMPLETED"`, `period="today"`) |
+| `place_order(...)` | `POST /accounts/{account}/orders`, as a single order or an IF-THEN group when SL/TP are given |
+| `modify_order(order_id, new_price, new_quantity)` | `PUT /accounts/{account}/orders` with `If-Match` |
+| `cancel_order(order_id)` | `DELETE /accounts/{account}/orders/{code}` with `If-Match` |
+| `close_position(position_id, quantity=None)` | MARKET order with `positionEffect=CLOSE` |
+| `modify_position_sl_tp(position_id, stop_loss, take_profit)` | moves existing protection orders (PUT) or adds them (POST) |
+| `close_all(instrument=None)` | `POST /accounts/{account}/close` (bulk close) |
+| `connect_websocket()`, `subscribe_market_data([...])`, `subscribe_account_updates()` | Push API: quotes → `price_update_queue`, orders → `order_update_queue`, portfolio/metrics → `account_update_queue` |
 
-Copy `.env.example` to `.env` and fill it in. `.env` is gitignored; never commit
-real credentials.
+**Sessions.** A background thread pings every `keepalive_interval` seconds (capped at
+half the session timeout the server reports). If a request still gets `401` because
+the session expired, the client logs in again once and retries. Retrying an order is
+safe: it keeps its `orderCode`, and DXtrade rejects a duplicate code (409, error 100)
+instead of opening a second position.
 
-```bash
-cp .env.example .env
-```
+**Errors.** Everything derives from `DXTradeWrapperError`. Server errors are
+`DXTradeAPIError` subclasses carrying `status_code`, `error_code` and `description` from
+DXtrade's error body: `AuthenticationError` (401/403), `NotFoundError`, `ConflictError`
+(409 business rejection), `PreconditionFailedError` (412), `RateLimitError` (429,
+`retry_after`) and `ServerError`. `OrderPlacementError` adds `order_code` and
+`ambiguous`. `ambiguous=True` means the request timed out after it was sent, so check
+for that `orderCode` before sending again. `ConnectionError` (alias
+`DXTradeConnectionError`) covers network failures.
+
+**Security.** The password and session token are never logged, and the token is not
+put in websocket URLs. The library does not configure logging; call
+`logging.basicConfig()` in your app to see its logs.
+
+**Push API URL.** The Push spec leaves the websocket address to each deployment. Pass
+`websocket_url=` (ask your broker). Market data uses the same URL with `/md` appended,
+as the spec describes.
 
 ## 🧪 Tests
 
-Tests use [`responses`](https://github.com/getsentry/responses) with hand-written
-JSON fixtures, so **no broker account is required** to run them — previously the
-single largest contributor blocker.
-
 ```bash
-pip install -r requirements-dev.txt
-python -m pytest tests/ -v
+pip install -e ".[test]"
+python -m pytest                                  # offline, ~100 tests
+DXTRADE_SPEC_TESTS=1 python -m pytest tests/test_spec_conformance.py -v
 ```
 
-**What they prove:** that the wrapper builds the URLs, headers, and payloads it
-intends to. They regression-lock all three blocking bugs.
+* The main suite mocks HTTP with [`responses`](https://github.com/getsentry/responses),
+  using fixtures shaped like the spec's schemas, and runs the Push channels against a
+  local websocket server.
+* `test_spec_conformance.py` downloads the official OpenAPI document (public, read-only)
+  and checks two things. First, every request the client sends uses a documented path,
+  method, query parameter and body fields, and the body validates against the schema.
+  Second, every fixture matches its response schema. It is opt-in because it needs
+  network access. The spec is not vendored.
 
-**What they do not prove:** that any DXtrade server accepts those requests. The
-fixtures in `tests/fixtures/` are hand-written from the same inferred protocol as
-the wrapper — **not recorded from a live session**, because no live session has
-ever succeeded. If the inference is wrong, these tests pass while the wrapper
-stays broken. Replacing the fixtures with real recorded traffic is the single
-most valuable contribution anyone with broker access could make.
+Known quirks in the OpenAPI document, which the conformance test tolerates:
+`AccountCode` and the date/time types are modelled as objects while the prose spec and
+its examples use strings, and order groups (IF-THEN/OCO) are documented in prose but
+missing from the OpenAPI request body.
+
+**What this does not prove:** that your broker's deployment behaves like the spec.
+Recorded traffic from a real demo account, with credentials and tokens removed, is the
+most valuable contribution anyone with access could make.
+
+## 🗂 History: why this was broken for two years
+
+The first version was reverse-engineered from community examples. It never completed a
+call. FTMO's `403` (REST access disabled for clients in April 2024) looked like the only
+problem and hid the others. A 2026 review found the client-side bugs: a missing
+`/dxsca-web` prefix on every call after login, `Bearer` instead of `DXAPI`, and orders
+missing `account`/`orderCode`. A later check against the public spec found more:
+invented field names in every parser, stop loss / take profit silently never placed,
+wrong endpoints and methods for history, modify, close and SL/TP, missing `If-Match`
+headers, a Push protocol that did not exist, and a balance that turned any parse error
+into zeros. [`CHANGELOG.md`](CHANGELOG.md) has the details.
+
+Lessons that still apply:
+
+1. **A correct diagnosis can still be an incomplete one.** The 403 was real, and it
+   stopped anyone looking further.
+2. **Check whether the docs exist before inferring.** The official spec had been public
+   the whole time.
+3. **Test at the boundary you control.** Validating outgoing requests against a schema
+   needs no broker.
+4. **Don't fabricate fallbacks.** An invented account code, zeros on parse failure, and
+   SL/TP skipped with only a log line all turn a clear error into a silent wrong answer.
 
 ## 📦 Packaging
 
-**Deliberately not published to PyPI, and there is no `pyproject.toml`.**
-
-Publishing a non-functional package next to the working, tested `dxtrade-sdk`
-would be net-negative: it would compete for installs on name recognition while
-being unable to place an order. Packaging becomes worth doing if and only if the
-protocol fixes above are verified against a live broker. Until then, the honest
-distribution channel for this repo is the README you are reading.
+Installable with `pip install .` or
+`pip install git+https://github.com/Bogzx/DXtrade-python-wrapper`. It ships type hints
+(`py.typed`). It is not published to PyPI. There is currently no package called
+`dxtrade-sdk` on PyPI (an earlier version of this README recommended one). Community
+SDKs exist on GitHub; they have not been evaluated here.
 
 ## ⚖️ Disclaimer
 
-This wrapper was built from inferred information and community examples. It is
-**not functional**, for the four independent reasons documented above, and its
-fixes are unverified.
-
-**Use at your own risk.** Automated trading carries significant financial risk.
-The authors and contributors are not responsible for any financial losses or
-other damages. Never point unverified trading code at a funded account.
-
----
-
-*This project is not affiliated with, endorsed by, or connected to Devexperts,
-DXTRADE, or FTMO.*
+Not affiliated with Devexperts, DXtrade or any broker. Automated trading carries
+significant financial risk. This client has not been verified against a live server:
+use a demo account, and never point untested trading code at a funded account.
