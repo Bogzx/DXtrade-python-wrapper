@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 
 class DXTradeWrapperError(Exception):
-    """Base exception for all DXTradeDashboardWrapper errors."""
+    """Base exception for all DXTradeClient errors."""
 
 
 class DXTradeAPIError(DXTradeWrapperError):
@@ -96,12 +96,14 @@ class OrderPlacementError(DXTradeAPIError):
         self.ambiguous = ambiguous
 
 
-class ConnectionError(DXTradeWrapperError):  # noqa: A001 - kept for backward compatibility
+class DXTradeConnectionError(DXTradeWrapperError):
     """Transport failure: DNS, TCP, TLS or timeout. No server response."""
 
 
-#: Alias that does not shadow the builtin ``ConnectionError``.
-DXTradeConnectionError = ConnectionError
+#: The 0.1 name, kept so ``from dxtrade_wrapper import ConnectionError`` still works.
+#: It is deliberately not in ``__all__``: ``from dxtrade_wrapper import *`` must not
+#: replace the builtin ``ConnectionError`` in the caller's module.
+ConnectionError = DXTradeConnectionError  # noqa: A001
 
 
 class WebSocketError(DXTradeWrapperError):

@@ -15,7 +15,7 @@ import responses
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from dxtrade_wrapper import DXTradeDashboardWrapper  # noqa: E402
+from dxtrade_wrapper import DXTradeClient  # noqa: E402
 
 BASE_URL = "https://dxtrade.example-broker.com"
 PREFIX = "/dxsca-web"
@@ -42,7 +42,7 @@ def make_wrapper(**kwargs):
         keepalive_interval=None,
     )
     params.update(kwargs)
-    return DXTradeDashboardWrapper(**params)
+    return DXTradeClient(**params)
 
 
 def body(call):

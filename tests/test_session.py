@@ -9,8 +9,8 @@ import responses
 from conftest import ACC, ACCOUNT, API, PASSWORD, TOKEN, fixture, make_wrapper
 from dxtrade_wrapper import (
     AuthenticationError,
-    ConnectionError,
     DXTradeAPIError,
+    DXTradeConnectionError,
     NotFoundError,
     RateLimitError,
     ServerError,
@@ -44,7 +44,7 @@ def test_login_without_token_is_an_error(api):
 
 def test_network_failure_is_a_connection_error(api):
     api.add(responses.POST, f"{API}/login", body=requests.exceptions.ConnectTimeout("boom"))
-    with pytest.raises(ConnectionError):
+    with pytest.raises(DXTradeConnectionError):
         make_wrapper().login()
 
 
