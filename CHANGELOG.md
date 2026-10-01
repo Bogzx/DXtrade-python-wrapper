@@ -17,6 +17,10 @@ for PyPI.
 - `logout()` closes the HTTP session's connection pool before starting a new one.
 - The sdist now ships `tests/conftest.py`, the JSON fixtures, the examples and this
   changelog, so its test suite runs.
+- `client.py` (1,430 lines) is split into layers that build on each other:
+  `_session.py` (HTTP, login, keepalive), `_account.py` (read-only data),
+  `_orders.py` and `_push.py`. `DXTradeClient`, `parse_interval` and `_PushChannel`
+  still import from `dxtrade_wrapper.client`; behaviour is unchanged.
 
 ### Fixed in independent review
 - `modify_order` on the entry (or a pending SL/TP) of an IF-THEN group sent a single
