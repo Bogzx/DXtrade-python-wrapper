@@ -19,7 +19,7 @@ import time
 
 from dotenv import load_dotenv
 
-from dxtrade_wrapper import DXTradeDashboardWrapper, DXTradeWrapperError
+from dxtrade_wrapper import DXTradeClient, DXTradeWrapperError
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -35,7 +35,7 @@ def main() -> int:
                   "in .env (see .env.example).")
         return 2
 
-    client = DXTradeDashboardWrapper(
+    client = DXTradeClient(
         base_url=base_url,
         username=os.environ["DXTRADE_USERNAME"],
         password=os.getenv("DXTRADE_PASSWORD", ""),
@@ -69,7 +69,7 @@ def main() -> int:
     return 0
 
 
-def demo_order(client: DXTradeDashboardWrapper) -> None:
+def demo_order(client: DXTradeClient) -> None:
     """A tiny LIMIT buy at DXTRADE_DEMO_PRICE (default 0.5, far below market), then cancelled."""
     symbol = SYMBOLS[0]
     price = float(os.getenv("DXTRADE_DEMO_PRICE", "0.5"))
@@ -80,7 +80,7 @@ def demo_order(client: DXTradeDashboardWrapper) -> None:
     log.info("Cancel: %s", client.cancel_order(code))
 
 
-def stream_quotes(client: DXTradeDashboardWrapper, seconds: int) -> None:
+def stream_quotes(client: DXTradeClient, seconds: int) -> None:
     client.connect_websocket()
     client.subscribe_market_data(SYMBOLS)
     client.subscribe_account_updates()

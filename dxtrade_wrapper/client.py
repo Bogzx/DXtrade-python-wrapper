@@ -1,5 +1,5 @@
 """
-DXTradeDashboardWrapper: a Python client for the DXtrade REST and Push APIs.
+DXTradeClient: a Python client for the DXtrade REST and Push APIs.
 
 It covers authentication and session upkeep, account data, order management and
 real-time updates for a trading dashboard or bot.
@@ -39,8 +39,8 @@ import websocket
 from .exceptions import (
     AuthenticationError,
     ConflictError,
-    ConnectionError,
     DXTradeAPIError,
+    DXTradeConnectionError,
     NotFoundError,
     OrderPlacementError,
     PreconditionFailedError,
@@ -97,13 +97,13 @@ def parse_interval(value: Any) -> Optional[float]:
     return None
 
 
-class DXTradeDashboardWrapper:
+class DXTradeClient:
     """
     A client for the DXtrade REST API (token authentication) and Push API.
 
     Typical use::
 
-        with DXTradeDashboardWrapper(base_url, username, password, "default") as dx:
+        with DXTradeClient(base_url, username, password, "default") as dx:
             print(dx.get_balance())
             dx.place_order("EUR/USD", "BUY", 1000, "MARKET", stop_loss=1.05, take_profit=1.2)
 
@@ -208,7 +208,7 @@ class DXTradeDashboardWrapper:
             f"authenticated={self._is_authenticated})"
         )
 
-    def __enter__(self) -> "DXTradeDashboardWrapper":
+    def __enter__(self) -> "DXTradeClient":
         self.login()
         return self
 
@@ -326,7 +326,7 @@ class DXTradeDashboardWrapper:
             )
         except requests.exceptions.RequestException as exc:
             # str(exc) carries the URL but never the body or auth header.
-            raise ConnectionError(f"{context}: network error: {exc}") from exc
+            raise DXTradeConnectionError(f"{context}: network error: {exc}") from exc
 
     @staticmethod
     def _retry_after(response: requests.Response) -> Optional[float]:
@@ -360,7 +360,7 @@ class DXTradeDashboardWrapper:
 
         Raises:
             AuthenticationError: Wrong credentials (401) or API access refused (403).
-            ConnectionError: The server could not be reached.
+            DXTradeConnectionError: The server could not be reached.
         """
         with self._auth_lock:
             payload = {
@@ -378,7 +378,7 @@ class DXTradeDashboardWrapper:
                 )
             except requests.exceptions.RequestException as exc:
                 self._is_authenticated = False
-                raise ConnectionError(f"Login: network error: {exc}") from exc
+                raise DXTradeConnectionError(f"Login: network error: {exc}") from exc
 
             if response.status_code == 403:
                 self._is_authenticated = False
@@ -431,6 +431,9 @@ class DXTradeDashboardWrapper:
                 self._request("POST", "logout", "Logout", retry_auth=False)
             except Exception as exc:  # noqa: BLE001 - logout must always clear local state
                 self._logger.warning("Logout request failed (ignored): %s", exc)
+        # Close the old pool: a bot that logs out and in again for days would
+        # otherwise leak one connection pool per session.
+        self._session.close()
         self._session = requests.Session()
         self._session.headers.update({"Accept": "application/json"})
         self._auth_token = None
@@ -672,7 +675,7 @@ class DXTradeDashboardWrapper:
         self._logger.debug("%s: %s", context, body)
         try:
             response = self._request("POST", path, context, json_body=body)
-        except ConnectionError as exc:
+        except DXTradeConnectionError as exc:
             cause = exc.__cause__
             sent = not isinstance(cause, requests.exceptions.ConnectTimeout)
             raise OrderPlacementError(
@@ -1327,7 +1330,7 @@ class DXTradeDashboardWrapper:
 class _PushChannel:
     """One Push API websocket with reconnect/backoff and subscription replay."""
 
-    def __init__(self, client: DXTradeDashboardWrapper, name: str, url: str):
+    def __init__(self, client: DXTradeClient, name: str, url: str):
         self.client = client
         self.name = name
         self.url = url
@@ -1415,6 +1418,10 @@ class _PushChannel:
             self._ws.send(json.dumps(message))
         except Exception as exc:  # noqa: BLE001
             raise WebSocketError(f"Failed to send {message.get('type')}: {exc}") from exc
+
+
+#: The 0.1 name of :class:`DXTradeClient`, kept as an alias.
+DXTradeDashboardWrapper = DXTradeClient
 
 
 def _version() -> str:
