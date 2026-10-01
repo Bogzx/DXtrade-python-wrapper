@@ -1,10 +1,22 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-10-01)
 
 Rebuilt against the public DXtrade REST/Push specification
 (https://demo.dx.trade/developers/, OpenAPI at /dxsca-web/swagger/openapi.json).
-Spec-conformant; not yet verified against a live broker.
+Spec-conformant; not yet verified against a live broker. First release prepared
+for PyPI.
+
+### Changed before the first PyPI release
+- The client class is now `DXTradeClient`; `DXTradeDashboardWrapper` remains as an
+  alias.
+- The network-error class is now `DXTradeConnectionError`. The old name
+  `ConnectionError` still imports, but is no longer in `__all__`: a star import used to
+  replace the builtin `ConnectionError` in the caller's module, so `except
+  ConnectionError` stopped catching socket errors.
+- `logout()` closes the HTTP session's connection pool before starting a new one.
+- The sdist now ships `tests/conftest.py`, the JSON fixtures, the examples and this
+  changelog, so its test suite runs.
 
 ### Fixed in independent review
 - `modify_order` on the entry (or a pending SL/TP) of an IF-THEN group sent a single

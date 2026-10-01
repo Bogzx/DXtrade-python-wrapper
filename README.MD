@@ -17,6 +17,20 @@ account updates. Prop-firm and retail traders use DXtrade.
 > **not** yet been run against a live broker. Try it on a **demo account** first. Brokers
 > decide whether to enable REST access at all (FTMO turned it off in April 2024).
 
+## 📥 Install
+
+```bash
+pip install dxtrade-python-wrapper                                  # PyPI, once 0.2.0 is published
+pip install git+https://github.com/Bogzx/DXtrade-python-wrapper     # latest main
+```
+
+```python
+import dxtrade_wrapper
+```
+
+Python 3.9+. Runtime dependencies: `requests` and `websocket-client`. Type hints ship with
+the package (`py.typed`).
+
 ## ⚡ Quick start (no broker account needed)
 
 ```bash
@@ -55,8 +69,9 @@ with DXTradeClient(
         print(exc.status_code, exc.error_code, exc.description, exc.ambiguous)
 ```
 
-Or put your settings in `.env` (see `.env.example`), `pip install -e ".[examples]"` and
-run `python example.py`. It is read-only unless you pass `--demo-order`.
+Or put your settings in `.env` (see [`.env.example`](https://github.com/Bogzx/DXtrade-python-wrapper/blob/main/.env.example)),
+`pip install -e ".[examples]"` and run [`python example.py`](https://github.com/Bogzx/DXtrade-python-wrapper/blob/main/example.py). It is
+read-only unless you pass `--demo-order`.
 
 ## 📚 API
 
@@ -86,13 +101,15 @@ instead of opening a second position. A read (GET) that is rate-limited (429) wa
 
 **Errors.** Everything derives from `DXTradeWrapperError`. Server errors are
 `DXTradeAPIError` subclasses carrying `status_code`, `error_code` and `description` from
-DXtrade's error body: `AuthenticationError` (401/403), `NotFoundError`, `ConflictError`
+DXtrade's error body: `AuthenticationError` (401, and a 403 at login, which means the
+broker has not enabled REST access), `NotFoundError`, `ConflictError`
 (409 business rejection), `PreconditionFailedError` (412), `RateLimitError` (429,
 `retry_after`) and `ServerError`. `OrderPlacementError` adds `order_code` and
 `ambiguous`. `ambiguous=True` means the outcome is unknown (a timeout after sending, a
 5xx, or an order group the server acknowledged only in part), so check for that
-`orderCode` before sending again. `ConnectionError` (alias
-`DXTradeConnectionError`) covers network failures.
+`orderCode` before sending again. `DXTradeConnectionError` covers network failures. Any
+other HTTP error, such as a 403 "Conditional request required", is a plain
+`DXTradeAPIError` with its `status_code`.
 
 **Security.** The password and session token are never logged, and the token is not
 put in websocket URLs. The library does not configure logging; call
@@ -138,7 +155,7 @@ missing `account`/`orderCode`. A later check against the public spec found more:
 invented field names in every parser, stop loss / take profit silently never placed,
 wrong endpoints and methods for history, modify, close and SL/TP, missing `If-Match`
 headers, a Push protocol that did not exist, and a balance that turned any parse error
-into zeros. [`CHANGELOG.md`](CHANGELOG.md) has the details.
+into zeros. [`CHANGELOG.md`](https://github.com/Bogzx/DXtrade-python-wrapper/blob/main/CHANGELOG.md) has the details.
 
 Lessons that still apply:
 
@@ -151,13 +168,18 @@ Lessons that still apply:
 4. **Don't fabricate fallbacks.** An invented account code, zeros on parse failure, and
    SL/TP skipped with only a log line all turn a clear error into a silent wrong answer.
 
-## 📦 Packaging
+## 📦 Packaging and releases
 
-Installable with `pip install .` or
-`pip install git+https://github.com/Bogzx/DXtrade-python-wrapper`. It ships type hints
-(`py.typed`). It is not published to PyPI. There is currently no package called
-`dxtrade-sdk` on PyPI (an earlier version of this README recommended one). Community
-SDKs exist on GitHub; they have not been evaluated here.
+The distribution is `dxtrade-python-wrapper`; the import name is `dxtrade_wrapper`. The
+sdist includes the tests and fixtures, so `pytest` runs from an unpacked sdist. Releases
+are built by [`release.yml`](https://github.com/Bogzx/DXtrade-python-wrapper/blob/main/.github/workflows/release.yml)
+when a GitHub release is published. It checks that the tag matches `__version__` and has
+a dated CHANGELOG entry, attaches the sdist and wheel to the release, and publishes them
+with PyPI Trusted Publishing (TestPyPI first) once the repository variable
+`PYPI_PUBLISH` is `true`.
+
+`DXTradeDashboardWrapper` (the 0.1 class name) and `ConnectionError` still import, as
+aliases of `DXTradeClient` and `DXTradeConnectionError`.
 
 ## ⚖️ Disclaimer
 
