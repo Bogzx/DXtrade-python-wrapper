@@ -16,8 +16,17 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Financial and Insurance Industry",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Office/Business :: Financial :: Investment",
+    "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
 dependencies = [
@@ -31,6 +40,9 @@ examples = ["python-dotenv>=0.19"]
 
 [project.urls]
 Homepage = "https://github.com/Bogzx/DXtrade-python-wrapper"
+Source = "https://github.com/Bogzx/DXtrade-python-wrapper"
+Issues = "https://github.com/Bogzx/DXtrade-python-wrapper/issues"
+Changelog = "https://github.com/Bogzx/DXtrade-python-wrapper/blob/main/CHANGELOG.md"
 "DXtrade API docs" = "https://demo.dx.trade/developers/"
 
 [tool.setuptools]
@@ -54,5 +66,7 @@ extend-exclude = [".venv"]
 select = ["E", "F", "W", "B"]
 
 [tool.mypy]
+# The oldest target current mypy accepts; Python 3.9 itself is covered by the CI
+# test matrix.
 python_version = "3.10"
 ignore_missing_imports = true

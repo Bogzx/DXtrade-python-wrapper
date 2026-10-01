@@ -1,0 +1,8 @@
+# setuptools only picks up tests/test*.py on its own; without conftest.py and the
+# JSON fixtures the sdist's test suite cannot even be collected.
+include CHANGELOG.md
+include example.py
+include .env.example
+recursive-include tests *.py *.json
+recursive-include examples *.py
+recursive-include scripts *.py
