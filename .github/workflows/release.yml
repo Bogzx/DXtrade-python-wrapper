@@ -18,11 +18,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
       - name: Tag matches __version__ and has a dated CHANGELOG entry
-        run: python scripts/check_release.py "${{ github.event.release.tag_name }}"
+        # Event data goes through env, never into the script text: a tag name is
+        # user-controlled and could otherwise inject shell.
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: python scripts/check_release.py "$TAG"
       - run: pip install build twine && python -m build
       - run: twine check --strict dist/*
       - name: Test the sdist
@@ -50,7 +56,9 @@ jobs:
       - name: Attach the sdist and wheel to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --repo "${{ github.repository }}"
+          TAG: ${{ github.event.release.tag_name }}
+          REPO: ${{ github.repository }}
+        run: gh release upload "$TAG" dist/* --repo "$REPO"
 
   publish-testpypi:
     needs: build
