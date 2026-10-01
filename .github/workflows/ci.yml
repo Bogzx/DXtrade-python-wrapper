@@ -44,5 +44,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install build && python -m build
-      - run: pip install dist/*.whl && cd /tmp && python -c "import dxtrade_wrapper; print(dxtrade_wrapper.__version__)"
+      - run: python scripts/check_release.py
+      - run: pip install build twine && python -m build
+      - run: twine check --strict dist/*
+      # The sdist must be self-contained: unpack it and run its own test suite.
+      - name: Test the sdist
+        run: |
+          mkdir /tmp/sdist && tar xzf dist/*.tar.gz -C /tmp/sdist
+          cd /tmp/sdist/*/
+          python -m venv /tmp/sdist-venv
+          /tmp/sdist-venv/bin/pip install -q ".[test]"
+          /tmp/sdist-venv/bin/python -m pytest -q
+      - name: Install the wheel in a clean venv
+        run: |
+          python -m venv /tmp/wheel-venv
+          /tmp/wheel-venv/bin/pip install -q dist/*.whl
+          cd /tmp && /tmp/wheel-venv/bin/python -c "
+          import importlib.resources, dxtrade_wrapper
+          assert importlib.resources.files('dxtrade_wrapper').joinpath('py.typed').is_file()
+          print(dxtrade_wrapper.__version__, dxtrade_wrapper.DXTradeClient)"

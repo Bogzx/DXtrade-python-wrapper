@@ -12,7 +12,7 @@ import re
 
 import responses
 
-from dxtrade_wrapper import DXTradeDashboardWrapper, OrderPlacementError
+from dxtrade_wrapper import DXTradeClient, OrderPlacementError
 
 BASE = "https://dxtrade.example-broker.com"
 API = f"{BASE}/dxsca-web"
@@ -56,7 +56,7 @@ def simulate(api: responses.RequestsMock) -> None:
 def main() -> None:
     with responses.RequestsMock(assert_all_requests_are_fired=False) as api:
         simulate(api)
-        with DXTradeDashboardWrapper(BASE, "demo", "demo-password", "default",
+        with DXTradeClient(BASE, "demo", "demo-password", "default",
                                      keepalive_interval=None) as dx:
             print("accounts :", dx.get_accounts())
             print("balance  :", dx.get_balance())
